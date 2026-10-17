@@ -122,6 +122,18 @@ impl MenuState {
         x: i32,
         y: i32,
     ) -> Option<Command> {
+        self.track_ex(owner, items, &[], x, y)
+    }
+
+    /// Like `track`, but items whose command is in `disabled` are grayed out.
+    pub fn track_ex(
+        &mut self,
+        owner: HWND,
+        items: Vec<Option<(String, Command, bool)>>,
+        disabled: &[Command],
+        x: i32,
+        y: i32,
+    ) -> Option<Command> {
         unsafe {
             let m = CreatePopupMenu().ok()?;
             self.popup.clear();
@@ -130,8 +142,11 @@ impl MenuState {
                     None => separator(m),
                     Some((text, cmd, checked)) => {
                         let id = POPUP_BASE + self.popup.len() as i32;
+                        let mut flags = if checked { MF_STRING | MF_CHECKED } else { MF_STRING };
+                        if disabled.contains(&cmd) {
+                            flags |= MF_GRAYED;
+                        }
                         self.popup.push(cmd);
-                        let flags = if checked { MF_STRING | MF_CHECKED } else { MF_STRING };
                         let _ = AppendMenuW(m, flags, id as usize, &HSTRING::from(text));
                     }
                 }

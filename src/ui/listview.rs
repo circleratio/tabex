@@ -174,6 +174,14 @@ pub fn apply_selection(hwnd: HWND, listing: &Listing) {
     }
 }
 
+/// Select exactly the rows in `range`.
+pub fn select_only(hwnd: HWND, range: std::ops::RangeInclusive<usize>) {
+    set_state(hwnd, -1, LIST_VIEW_ITEM_STATE_FLAGS(0), LVIS_SELECTED);
+    for p in range {
+        set_state(hwnd, p as i32, LVIS_SELECTED, LVIS_SELECTED);
+    }
+}
+
 pub fn focused(hwnd: HWND) -> Option<usize> {
     let r = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize).0;
     (r >= 0).then_some(r as usize)
@@ -182,6 +190,16 @@ pub fn focused(hwnd: HWND) -> Option<usize> {
 pub fn set_focused(hwnd: HWND, pos: usize) {
     set_state(hwnd, pos as i32, LVIS_FOCUSED, LVIS_FOCUSED);
     send(hwnd, LVM_ENSUREVISIBLE, pos, 0);
+}
+
+/// Anchor row used for Shift+click / Shift+arrow range selection.
+pub fn selection_mark(hwnd: HWND) -> Option<usize> {
+    let r = send(hwnd, LVM_GETSELECTIONMARK, 0, 0).0;
+    (r >= 0).then_some(r as usize)
+}
+
+pub fn set_selection_mark(hwnd: HWND, pos: usize) {
+    send(hwnd, LVM_SETSELECTIONMARK, 0, pos as isize);
 }
 
 pub fn top_index(hwnd: HWND) -> usize {

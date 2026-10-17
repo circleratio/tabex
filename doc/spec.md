@@ -241,6 +241,7 @@ show_hidden = false
 show_dotfiles = false                  # dot files are hidden by default
 show_extensions = true
 nav_tree_visible = true
+nav_workspaces_expanded = true         # "ワークスペース" node in the navigation tree
 window = { x = 100, y = 100, width = 1400, height = 900, maximized = false }
 
 [keys]                                  # optional overrides, "Ctrl+Alt+W" = "WorkspaceList"
@@ -412,10 +413,42 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 ### 7.5 ナビゲーションツリー（`ui::navtree`）
 
-- 最上位の項目は、クイックアクセス・各ドライブ・ネットワーク・ごみ箱とする。
+- 最上位の項目は、先頭から「ワークスペース」ノード・クイックアクセス・各ドライブ・ネットワーク・ごみ箱とする。
+- ツリーの各ノードは、何を表すかを `NavTarget` で持つ。
+
+  ```rust
+  pub enum NavTarget {
+      Folder(Location),   // shell / file system folder
+      WorkspaceRoot,      // the "ワークスペース" node
+      Workspace(String),  // one registered workspace (leaf)
+      Removed,            // tree item already deleted; index kept so lParam stays valid
+  }
+  ```
+
+  - `TVITEM.lParam` はノード配列の添字なので、ワークスペースの項目を消すときは配列から取り除かず `Removed` にする。
+  - ドロップ先の判定（`location_at`）と `node_location` は `Folder` のときだけ値を返す。
 - 子の項目は、ノードを展開したときに enum ワーカーで列挙して追加する（`TVN_ITEMEXPANDING` を受けて非同期で処理する）。
 - ツリー全体を作るのは、ウィンドウを表示したあと最初のアイドル時とし、起動時間を延ばさないようにする。
 - 子の項目を追加するときに、隠しファイルとドットファイルの表示設定で絞り込む。どちらかの設定を切り替えたら、ツリーを最上位から作り直す（展開済みの子は読み込み直す）。
+
+#### 7.5.1 ワークスペースノード
+
+- 子の一覧は `store::tree_workspaces(base, fallback) -> Vec<String>` で求める。
+  - `paths::list_workspaces` で名前を集め、`workspace_file::load` で読めたものだけを残し、`fs::sort::compare_names` の自然順で並べる。
+  - ワークスペースファイルは小さく数も限られるので、UI スレッドで同期的に読む（ツリーを作るのはアイドル時なので起動時間には影響しない）。
+- 「ワークスペース」ノードのアイコンは `SHGetStockIconInfo(SIID_STACK)`、各ワークスペースは `SIID_FOLDER` のシステムイメージリストの番号を使う。
+- `NavTree::set_workspaces(names: &[String], current: &str)` で子を作り直す。古い子は `TVM_DELETEITEM` で消して `Removed` にし、新しい子を挿入する。今のワークスペース（大文字小文字を区別しない比較）には `TVIS_BOLD` を付ける。
+- `App::refresh_nav_workspaces()` が `tree_workspaces` を呼んで `set_workspaces` に渡す。次の処理の最後に必ず呼ぶ（ツリーがまだ作られていなければ何もしない）。
+  - `activate_workspace`（切り替え・新規作成・今のワークスペースの削除）
+  - `workspace_save_as`、`workspace_rename`、`workspace_delete`
+  - `workspace_switch` で読み込みに失敗したとき（壊れたファイルを一覧から外すため）
+- 選択: `TVN_SELCHANGED` の action がマウスかキーボードで、選ばれたノードが `Workspace(name)` なら `Command::WorkspaceSwitch(name)` を実行する。今のワークスペースなら `workspace_switch` の既存の判定で何もしない。切り替えのあとはフォーカスをツリーに戻し、矢印キーで続けて選べるようにする。`WorkspaceRoot` を選んだときは何もしない。
+- 右クリック（ツリーの `NM_RCLICK`）: カーソル位置を `TVM_HITTEST` で調べる。
+  - `Workspace(name)`: 「名前の変更...」「削除」。今のワークスペースでは「削除」を無効（`MF_GRAYED`）にする。選んだら `workspace_rename(name)` / `workspace_delete(name)` を呼ぶ。
+  - `WorkspaceRoot`: 「新しいワークスペース」（`WorkspaceNew { from_current: false }`）と「今の構成を元に新規作成...」（`WorkspaceNew { from_current: true }`）。
+  - それ以外のノードでは既定の処理に任せる。
+  - 無効な項目を出すため、`MenuState::track` の項目に無効フラグを渡せる `track_ex(owner, items, disabled: &[Command], x, y)` を追加し、`track` はこれに空の `disabled` を渡す。
+- 展開状態: `config.toml` の `nav_workspaces_expanded`（既定 `true`）。ツリーを作るときに `true` なら `TVM_EXPAND` で開く。`TVN_ITEMEXPANDED` で `WorkspaceRoot` の状態が変わったら値を更新し、`config_dirty` を立てる（ほかの表示設定と同じく、切り替え時・終了時に保存される）。
 
 ### 7.6 ワークスペース一覧（`ui::workspace_dialog`）
 
@@ -445,6 +478,35 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 | Alt+Enter | Properties | Ctrl+H | ToggleHidden |
 | Ctrl+Shift+H | ToggleDotfiles | | |
 | Ctrl+Alt+W | WorkspaceList | Ctrl+Shift+1..5 | SetViewMode |
+| J / K | CursorDown / CursorUp | Shift+J / Shift+K | ExtendSelectionDown / ExtendSelectionUp |
+| H / L | PrevTab / NextTab | | |
+
+#### 7.7.1 vi 風のカーソル移動（hjkl）
+
+- 有効範囲は「割り当て」ではなく「キー」で決める。`ui::accel::is_list_only_key(k: &KeySpec) -> bool` は、Ctrl も Alt も押していない英数字キー（Shift だけは可）のとき `true` を返す。こうしたキーは、ファイル一覧にフォーカスがあるときだけ割り当てを引く。
+  - これで、ナビゲーションツリーの頭文字ジャンプや、Edit コントロールへの文字入力を横取りしない（Edit はもともと `is_edit_key` で除外している）。
+  - 同じ `PrevTab` / `NextTab` でも、Ctrl+Tab はどこにフォーカスがあっても効き、H / L は一覧の中だけで効く。
+  - `pre_translate` で `WM_KEYDOWN` を消費するので `WM_CHAR` が作られず、ListView の頭文字ジャンプ（`LVN_ODFINDITEM`）は h / j / k / l では起きない。ほかの文字は今までどおり使える。
+  - IME がオンのときは `WM_KEYDOWN` の仮想キーが `VK_PROCESSKEY` になるので、割り当てには当たらない。
+- `Command` に `CursorDown` / `CursorUp` / `ExtendSelectionDown` / `ExtendSelectionUp` を追加する。`config.toml` の `[keys]` で使う名前も同じにする。4 つとも `is_list_command` に含める。
+- カーソル移動の計算は純粋関数にする（`model::listing`）。
+
+  ```rust
+  pub struct CursorMove {
+      pub focus: usize,                  // new focused row
+      pub select: RangeInclusive<usize>, // rows to select (everything else is deselected)
+      pub mark: usize,                   // new selection mark (anchor)
+  }
+  pub fn cursor_step(count: usize, focus: Option<usize>, mark: Option<usize>, delta: isize, extend: bool)
+      -> Option<CursorMove>
+  ```
+
+  - `count == 0` なら `None`。フォーカス行がなければ先頭（0）に移る。
+  - 新しい行は `focus + delta` を `0..count` に収める（端で止まり、回り込まない）。
+  - `extend == false`: 新しい行だけを選び、`mark` も新しい行にする。
+  - `extend == true`: アンカーは `mark`（なければ元のフォーカス行）。アンカーから新しい行までを選び、`mark` は変えない。
+- 実行（`App`）: `listview::focused` と `LVM_GETSELECTIONMARK` で今の状態を取り、`cursor_step` の結果を `Listing::select_range` でモデルに入れる。それから `suppress_selection` を立てて `listview::apply_selection` で一覧に反映し、`set_focused`（`LVM_ENSUREVISIBLE` を含む）と `LVM_SETSELECTIONMARK` を行ってステータスバーを更新する。マウスの Shift+クリックと同じアンカーを使うので、両者を混ぜても範囲がずれない。
+- H / L は既存の `PrevTab` / `NextTab`（`Workspace::cycle_tab`、端で回り込む）をそのまま使う。
 
 ### 7.8 DPI とテーマ
 
@@ -555,15 +617,16 @@ strip = true
 |---|---|
 | `model::tabs` | タブを開く・閉じる・移動・複製したとき、`active_tab` が正しく付け替わること。最後の 1 タブを閉じたときの動き。ペインをまたぐ移動。閉じたタブの再オープン（上限の 20 件を超えたとき） |
 | `model::history` | 戻る・進むの動き。新しく移動したら進む用の履歴が消えること。上限の 100 件 |
-| `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し |
+| `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき |
 | `model::layout` | 1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
+| `store::config` | 既定値（`nav_workspaces_expanded` が `true` になることを含む）、往復、最近使った一覧、知らない version |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
 | `store::autosave` | 時刻を差し替えて、1 秒間変更がなかったときだけ保存すること。すぐ保存すべき場面（切替時など）で保存すること |
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
 | `fs::sort` | 自然順（`file2` が `file10` より前）、フォルダが先に来ること、昇順・降順、値が同じときの並び |
 | `model::workspace` | 親フォルダの求め方（ドライブのルート、UNC）、パンくずの分割、タブタイトル |
-| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー |
+| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`）と hjkl の既定の割り当て |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
 | `shell::dragdrop` | ドロップ効果の決定（Ctrl・Shift、同じドライブかどうか、UNC、許可されていない効果） |
@@ -578,6 +641,7 @@ strip = true
 - `store.rs`: `TABEX_HOME` を一時ディレクトリに向けて、次を確かめる。
   - 保存した結果、`.tmp` ファイルが残らないこと
   - 壊れたファイルを上書きしないこと
+  - `tree_workspaces` が自然順（`ws2` が `ws10` より前）で並べ、読み込めないファイルと `.toml` 以外のファイルを除くこと
   - 初回起動で `default` が作られること
 
 ### 11.3 性能測定

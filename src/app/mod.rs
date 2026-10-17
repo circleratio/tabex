@@ -610,7 +610,7 @@ impl App {
                     return false;
                 };
                 let in_list = self.panes.iter().any(|p| p.list == focus);
-                if ui::accel::is_list_command(&cmd) && !in_list {
+                if (ui::accel::is_list_command(&cmd) || ui::accel::is_list_only_key(&spec)) && !in_list {
                     return false;
                 }
                 // Tab in the tree or address bar keeps normal focus behaviour.

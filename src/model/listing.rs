@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::ops::RangeInclusive;
 
 pub const ATTR_READONLY: u32 = 0x1;
 pub const ATTR_HIDDEN: u32 = 0x2;
@@ -386,6 +387,58 @@ impl Listing {
             .map(|e| e.size)
             .sum()
     }
+
+    /// Select exactly the visible positions in `range`.
+    pub fn select_range(&mut self, range: RangeInclusive<usize>) {
+        self.selection.clear();
+        for pos in range {
+            if let Some(id) = self.id_at(pos) {
+                self.selection.insert(id);
+            }
+        }
+    }
+}
+
+/// Result of a keyboard cursor step (j / k).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorMove {
+    pub focus: usize,
+    /// Rows to select; everything else is deselected.
+    pub select: RangeInclusive<usize>,
+    /// New selection mark (anchor for range selection).
+    pub mark: usize,
+}
+
+/// Move the focus by `delta` rows, stopping at both ends. With `extend`, select from the
+/// anchor (`mark`, else the old focus) to the new row like Shift+arrow keys.
+pub fn cursor_step(
+    count: usize,
+    focus: Option<usize>,
+    mark: Option<usize>,
+    delta: isize,
+    extend: bool,
+) -> Option<CursorMove> {
+    if count == 0 {
+        return None;
+    }
+    let last = count - 1;
+    let new = match focus {
+        Some(f) => f.min(last).saturating_add_signed(delta).min(last),
+        None => 0,
+    };
+    if !extend {
+        return Some(CursorMove {
+            focus: new,
+            select: new..=new,
+            mark: new,
+        });
+    }
+    let anchor = mark.or(focus).unwrap_or(new).min(last);
+    Some(CursorMove {
+        focus: new,
+        select: anchor.min(new)..=anchor.max(new),
+        mark: anchor,
+    })
 }
 
 #[cfg(test)]
@@ -638,5 +691,55 @@ pub(crate) mod tests {
             full.append_chunk(all, &by_size);
             assert_eq!(names(&chunked), names(&full));
         }
+    }
+
+    #[test]
+    fn select_range_replaces_selection() {
+        let mut l = Listing::new(1, Filter::default());
+        l.append_chunk(vec![f("a"), f("b"), f("c"), f("d")], &by_name);
+        l.set_selected(0, true);
+        l.select_range(1..=2);
+        assert_eq!(l.selected_positions(), [1, 2]);
+        l.select_range(3..=9);
+        assert_eq!(l.selected_positions(), [3]);
+    }
+
+    fn step(
+        count: usize,
+        focus: Option<usize>,
+        mark: Option<usize>,
+        delta: isize,
+        extend: bool,
+    ) -> (usize, (usize, usize), usize) {
+        let m = cursor_step(count, focus, mark, delta, extend).unwrap();
+        (m.focus, (*m.select.start(), *m.select.end()), m.mark)
+    }
+
+    #[test]
+    fn cursor_moves_and_stops_at_ends() {
+        assert_eq!(cursor_step(0, None, None, 1, false), None);
+        assert_eq!(step(5, Some(2), Some(2), 1, false), (3, (3, 3), 3));
+        assert_eq!(step(5, Some(2), Some(0), -1, false), (1, (1, 1), 1));
+        assert_eq!(step(5, Some(4), None, 1, false), (4, (4, 4), 4));
+        assert_eq!(step(5, Some(0), None, -1, false), (0, (0, 0), 0));
+        // No focused row yet: start at the top whichever way.
+        assert_eq!(step(5, None, None, 1, false), (0, (0, 0), 0));
+        assert_eq!(step(5, None, None, -1, false), (0, (0, 0), 0));
+        // A stale focus past the end (rows were removed) is clamped.
+        assert_eq!(step(3, Some(7), None, -1, false), (1, (1, 1), 1));
+    }
+
+    #[test]
+    fn cursor_extends_from_anchor() {
+        // Down twice from row 1, then back up across the anchor.
+        assert_eq!(step(6, Some(1), Some(1), 1, true), (2, (1, 2), 1));
+        assert_eq!(step(6, Some(2), Some(1), 1, true), (3, (1, 3), 1));
+        assert_eq!(step(6, Some(3), Some(1), -1, true), (2, (1, 2), 1));
+        assert_eq!(step(6, Some(1), Some(1), -1, true), (0, (0, 1), 1));
+        // Without a mark the old focus is the anchor.
+        assert_eq!(step(6, Some(4), None, 1, true), (5, (4, 5), 4));
+        // At the end the range stays put.
+        assert_eq!(step(6, Some(5), Some(4), 1, true), (5, (4, 5), 4));
+        assert_eq!(step(6, None, None, 1, true), (0, (0, 0), 0));
     }
 }

@@ -159,6 +159,10 @@ impl App {
                 }
                 self.update_status();
             }
+            CursorDown => self.cursor_step(side, 1, false),
+            CursorUp => self.cursor_step(side, -1, false),
+            ExtendSelectionDown => self.cursor_step(side, 1, true),
+            ExtendSelectionUp => self.cursor_step(side, -1, true),
             SetViewMode(mode) => {
                 self.capture_view(side);
                 let tab = self.ws.active_tab_mut();
@@ -258,6 +262,32 @@ impl App {
                 let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             },
         }
+    }
+
+    /// Move (or extend) the list selection by one row, like the arrow keys.
+    fn cursor_step(&mut self, side: PaneSide, delta: isize, extend: bool) {
+        let list = self.panes[side.index()].list;
+        let id = self.ws.active_tab().id;
+        let Some(len) = self.rt.get(&id).and_then(|r| r.listing.as_ref()).map(|l| l.len()) else {
+            return;
+        };
+        let focus = listview::focused(list);
+        let mark = listview::selection_mark(list);
+        let Some(m) = crate::model::listing::cursor_step(len, focus, mark, delta, extend) else {
+            return;
+        };
+        // Update the control first without holding a borrow of the listing: its change
+        // notifications re-enter the App. The model is set afterwards so it ends up exact
+        // whatever those notifications did.
+        self.suppress_selection = true;
+        listview::select_only(list, m.select.clone());
+        listview::set_focused(list, m.focus);
+        listview::set_selection_mark(list, m.mark);
+        self.suppress_selection = false;
+        if let Some(l) = self.rt.get_mut(&id).and_then(|r| r.listing.as_mut()) {
+            l.select_range(m.select);
+        }
+        self.update_status();
     }
 
     /// Re-filter every listing and the navigation tree after a visibility setting changed.

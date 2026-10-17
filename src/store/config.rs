@@ -47,6 +47,9 @@ pub struct Config {
     pub show_extensions: bool,
     #[serde(default = "yes")]
     pub nav_tree_visible: bool,
+    /// Whether the "ワークスペース" node of the navigation tree is expanded.
+    #[serde(default = "yes")]
+    pub nav_workspaces_expanded: bool,
     #[serde(default = "default_nav_width")]
     pub nav_width: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +132,7 @@ mod tests {
         assert_eq!(c.version, 1);
         assert!(c.show_extensions);
         assert!(c.nav_tree_visible);
+        assert!(c.nav_workspaces_expanded);
         assert!(!c.show_hidden);
         assert!(!c.show_dotfiles);
         assert!(c.last_workspace.is_none());

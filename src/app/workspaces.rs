@@ -82,6 +82,7 @@ impl App {
         self.refresh_panes();
         self.layout();
         self.focus_active_list();
+        self.refresh_nav_workspaces();
     }
 
     pub fn workspace_switch(&mut self, name: &str) {
@@ -99,7 +100,11 @@ impl App {
                 self.save_now();
                 self.activate_workspace(ws);
             }
-            Err(e) => self.error_box(&format!("ワークスペース \"{name}\" を開けませんでした。\n\n{e}")),
+            Err(e) => {
+                self.error_box(&format!("ワークスペース \"{name}\" を開けませんでした。\n\n{e}"));
+                // Drop the unreadable file from the tree.
+                self.refresh_nav_workspaces();
+            }
         }
     }
 
@@ -140,6 +145,7 @@ impl App {
         self.config.touch_recent(&name);
         self.save_config();
         self.update_title();
+        self.refresh_nav_workspaces();
         self.show_status(&format!("ワークスペース \"{name}\" を保存しました"));
     }
 
@@ -167,6 +173,7 @@ impl App {
         self.config.rename(old, &new);
         self.save_config();
         self.update_title();
+        self.refresh_nav_workspaces();
     }
 
     pub fn workspace_delete(&mut self, name: &str) {
@@ -202,6 +209,7 @@ impl App {
             self.activate_workspace(opened.workspace);
         } else {
             self.save_config();
+            self.refresh_nav_workspaces();
         }
     }
 }

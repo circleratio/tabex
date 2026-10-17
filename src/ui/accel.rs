@@ -117,6 +117,13 @@ pub fn default_bindings() -> Vec<(&'static str, Command)> {
         ("Ctrl+Shift+3", SetViewMode(ViewMode::IconsSmall)),
         ("Ctrl+Shift+4", SetViewMode(ViewMode::List)),
         ("Ctrl+Shift+5", SetViewMode(ViewMode::Details)),
+        // vi-style movement; plain letters only act inside the file list.
+        ("J", CursorDown),
+        ("K", CursorUp),
+        ("Shift+J", ExtendSelectionDown),
+        ("Shift+K", ExtendSelectionUp),
+        ("H", PrevTab),
+        ("L", NextTab),
     ];
     const DIGITS: [&str; 9] = [
         "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9",
@@ -140,7 +147,18 @@ pub fn is_list_command(c: &Command) -> bool {
             | Command::Paste
             | Command::SelectAll
             | Command::Properties
+            | Command::CursorDown
+            | Command::CursorUp
+            | Command::ExtendSelectionDown
+            | Command::ExtendSelectionUp
     )
+}
+
+/// Plain letter / digit keys (Shift allowed) are bound only while the file list has focus,
+/// so the tree's type-ahead and text input elsewhere keep working.
+pub fn is_list_only_key(k: &KeySpec) -> bool {
+    // VK codes: '0'..'9' = 0x30..0x39, 'A'..'Z' = 0x41..0x5A.
+    !k.ctrl && !k.alt && matches!(k.vk, 0x30..=0x39 | 0x41..=0x5A)
 }
 
 /// Keys an edit control needs for itself; never steal them while editing text.
@@ -254,5 +272,34 @@ mod tests {
         assert!(is_edit_key(&parse_key("Ctrl+A").unwrap()));
         assert!(!is_edit_key(&parse_key("Ctrl+T").unwrap()));
         assert!(!is_edit_key(&parse_key("Alt+Left").unwrap()));
+    }
+
+    #[test]
+    fn list_only_keys() {
+        assert!(is_list_only_key(&parse_key("J").unwrap()));
+        assert!(is_list_only_key(&parse_key("Shift+K").unwrap()));
+        assert!(is_list_only_key(&parse_key("1").unwrap()));
+        assert!(!is_list_only_key(&parse_key("Ctrl+J").unwrap()));
+        assert!(!is_list_only_key(&parse_key("Alt+H").unwrap()));
+        assert!(!is_list_only_key(&parse_key("Tab").unwrap()));
+        assert!(!is_list_only_key(&parse_key("Down").unwrap()));
+        assert!(!is_list_only_key(&parse_key("F5").unwrap()));
+    }
+
+    #[test]
+    fn vi_keys() {
+        let (m, _) = KeyMap::new(&BTreeMap::new());
+        let get = |k: &str| m.lookup(&parse_key(k).unwrap()).cloned();
+        assert_eq!(get("J"), Some(Command::CursorDown));
+        assert_eq!(get("K"), Some(Command::CursorUp));
+        assert_eq!(get("Shift+J"), Some(Command::ExtendSelectionDown));
+        assert_eq!(get("Shift+K"), Some(Command::ExtendSelectionUp));
+        assert_eq!(get("H"), Some(Command::PrevTab));
+        assert_eq!(get("L"), Some(Command::NextTab));
+        let mut o = BTreeMap::new();
+        o.insert("J".to_string(), "None".to_string());
+        let (m, w) = KeyMap::new(&o);
+        assert!(w.is_empty());
+        assert_eq!(m.lookup(&parse_key("J").unwrap()), None);
     }
 }

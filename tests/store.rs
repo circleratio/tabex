@@ -92,3 +92,17 @@ fn tabex_home_overrides_base_dir() {
     unsafe { std::env::remove_var("TABEX_HOME") };
     assert!(paths::base_dir().ends_with("tabex"));
 }
+
+#[test]
+fn tree_workspaces_natural_order_and_readable_only() {
+    let base = temp_base("tree");
+    let (l, r) = defaults();
+    for n in ["ws10", "ws2", "Alpha"] {
+        store::open_or_create(&base, Some(n), (&l, &r));
+    }
+    let dir = paths::workspaces_dir(&base);
+    std::fs::write(dir.join("broken.toml"), "xxx").unwrap();
+    std::fs::write(dir.join("notes.txt"), "not a workspace").unwrap();
+    assert_eq!(store::tree_workspaces(&base, &l), ["Alpha", "ws2", "ws10"]);
+    std::fs::remove_dir_all(&base).unwrap();
+}

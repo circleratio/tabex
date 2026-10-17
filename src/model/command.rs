@@ -43,6 +43,12 @@ pub enum Command {
     Undo,
     SelectAll,
     Properties,
+    /// Move the selection one row down / up (vi-style j / k).
+    CursorDown,
+    CursorUp,
+    /// Extend the selection one row down / up (Shift+J / Shift+K).
+    ExtendSelectionDown,
+    ExtendSelectionUp,
 
     SetViewMode(ViewMode),
     SortBy(ColumnId),
@@ -94,6 +100,10 @@ impl Command {
             "Undo" => Undo,
             "SelectAll" => SelectAll,
             "Properties" => Properties,
+            "CursorDown" => CursorDown,
+            "CursorUp" => CursorUp,
+            "ExtendSelectionDown" => ExtendSelectionDown,
+            "ExtendSelectionUp" => ExtendSelectionUp,
             "ToggleHidden" => ToggleHidden,
             "ToggleDotfiles" => ToggleDotfiles,
             "ToggleExtensions" => ToggleExtensions,
@@ -126,6 +136,11 @@ mod tests {
         assert_eq!(Command::from_name("NewTab"), Some(Command::NewTab));
         assert_eq!(Command::from_name("ToggleDotfiles"), Some(Command::ToggleDotfiles));
         assert_eq!(Command::from_name("SelectTab3"), Some(Command::SelectTab(3)));
+        assert_eq!(Command::from_name("CursorDown"), Some(Command::CursorDown));
+        assert_eq!(
+            Command::from_name("ExtendSelectionUp"),
+            Some(Command::ExtendSelectionUp)
+        );
         assert_eq!(Command::from_name("SelectTab0"), None);
         assert_eq!(Command::from_name("nope"), None);
     }

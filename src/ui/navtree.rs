@@ -1,4 +1,4 @@
-//! Navigation tree: quick access, drives, network and recycle bin, filled lazily.
+//! Navigation tree: workspaces, quick access, drives, network and recycle bin, filled lazily.
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
@@ -28,10 +28,35 @@ pub struct NavChild {
     pub has_children: bool,
 }
 
+/// What a tree node stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NavTarget {
+    Folder(Location),
+    /// The "ワークスペース" node.
+    WorkspaceRoot,
+    /// One registered workspace (leaf).
+    Workspace(String),
+    /// Tree item already deleted; the slot is kept so `lParam` indices stay valid.
+    Removed,
+}
+
 struct Node {
     item: HTREEITEM,
-    location: Location,
+    target: NavTarget,
     loaded: bool,
+}
+
+const WORKSPACE_ROOT_NAME: &str = "ワークスペース";
+
+fn stock_icon(id: SHSTOCKICONID) -> i32 {
+    let mut info = SHSTOCKICONINFO {
+        cbSize: std::mem::size_of::<SHSTOCKICONINFO>() as u32,
+        ..Default::default()
+    };
+    match unsafe { SHGetStockIconInfo(id, SHGSI_SYSICONINDEX | SHGSI_SMALLICON, &mut info) } {
+        Ok(()) => info.iSysImageIndex,
+        Err(_) => 0,
+    }
 }
 
 pub struct NavTree {
@@ -81,7 +106,19 @@ impl NavTree {
         }
     }
 
-    fn insert(&mut self, parent: HTREEITEM, name: &str, location: Location, icon: i32, has_children: bool) -> usize {
+    fn insert(&mut self, parent: HTREEITEM, name: &str, target: NavTarget, icon: i32, has_children: bool) -> usize {
+        self.insert_ex(parent, name, target, icon, has_children, false)
+    }
+
+    fn insert_ex(
+        &mut self,
+        parent: HTREEITEM,
+        name: &str,
+        target: NavTarget,
+        icon: i32,
+        has_children: bool,
+        bold: bool,
+    ) -> usize {
         let mut text: Vec<u16> = super::wz(name);
         let idx = self.nodes.len();
         let ins = TVINSERTSTRUCTW {
@@ -89,7 +126,9 @@ impl NavTree {
             hInsertAfter: TVI_LAST,
             Anonymous: TVINSERTSTRUCTW_0 {
                 itemex: TVITEMEXW {
-                    mask: TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_CHILDREN,
+                    mask: TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_CHILDREN | TVIF_STATE,
+                    state: if bold { TVIS_BOLD.0 } else { 0 },
+                    stateMask: TVIS_BOLD.0,
                     pszText: PWSTR(text.as_mut_ptr()),
                     iImage: icon,
                     iSelectedImage: icon,
@@ -102,7 +141,7 @@ impl NavTree {
         let item = HTREEITEM(send(self.hwnd, TVM_INSERTITEMW, 0, &ins as *const _ as isize).0);
         self.nodes.push(Node {
             item,
-            location,
+            target,
             loaded: false,
         });
         idx
@@ -112,22 +151,106 @@ impl NavTree {
         if !self.nodes.is_empty() {
             return;
         }
+        let icon = stock_icon(SIID_STACK);
+        self.insert(
+            HTREEITEM::default(),
+            WORKSPACE_ROOT_NAME,
+            NavTarget::WorkspaceRoot,
+            icon,
+            true,
+        );
         for r in ROOTS {
             let Ok(pidl) = Pidl::parse(r) else { continue };
             let name = shell_display_name(&pidl).unwrap_or_else(|| r.to_string());
             let icon = crate::shell::icons::pidl_icon(pidl.as_ptr());
-            self.insert(HTREEITEM::default(), &name, Location::new(r), icon, true);
+            self.insert(
+                HTREEITEM::default(),
+                &name,
+                NavTarget::Folder(Location::new(r)),
+                icon,
+                true,
+            );
         }
     }
 
-    /// Expand "This PC" so drives are visible. Returns its node for loading.
-    pub fn expand_this_pc(&mut self) -> Option<usize> {
-        let i = self.nodes.iter().position(|n| n.location.as_str() == ROOTS[1])?;
-        Some(i)
+    fn workspace_root(&self) -> Option<HTREEITEM> {
+        self.nodes
+            .iter()
+            .find(|n| n.target == NavTarget::WorkspaceRoot)
+            .map(|n| n.item)
     }
 
-    /// Location of the item at client coordinates.
-    pub fn location_at(&self, x: i32, y: i32) -> Option<Location> {
+    pub fn expand_workspaces(&self, expand: bool) {
+        if let Some(root) = self.workspace_root() {
+            let action = if expand { TVE_EXPAND } else { TVE_COLLAPSE };
+            send(self.hwnd, TVM_EXPAND, action.0 as usize, root.0);
+        }
+    }
+
+    fn set_bold(&self, item: HTREEITEM, bold: bool) {
+        let it = TVITEMEXW {
+            mask: TVIF_STATE,
+            hItem: item,
+            state: if bold { TVIS_BOLD.0 } else { 0 },
+            stateMask: TVIS_BOLD.0,
+            ..Default::default()
+        };
+        send(self.hwnd, TVM_SETITEMW, 0, &it as *const _ as isize);
+    }
+
+    /// Show `names` under the workspace node, with `current` in bold. When the names are
+    /// unchanged only the bold state is updated, so the selection is left alone.
+    pub fn set_workspaces(&mut self, names: &[String], current: &str) {
+        let Some(root) = self.workspace_root() else { return };
+        let is_current = |n: &str| n.eq_ignore_ascii_case(current);
+        let existing: Vec<usize> = (0..self.nodes.len())
+            .filter(|&i| matches!(self.nodes[i].target, NavTarget::Workspace(_)))
+            .collect();
+        let same = existing.len() == names.len()
+            && existing
+                .iter()
+                .zip(names)
+                .all(|(&i, n)| matches!(&self.nodes[i].target, NavTarget::Workspace(m) if m == n));
+        if same {
+            for &i in &existing {
+                if let NavTarget::Workspace(n) = &self.nodes[i].target {
+                    self.set_bold(self.nodes[i].item, is_current(n));
+                }
+            }
+            return;
+        }
+        let selected = HTREEITEM(send(self.hwnd, TVM_GETNEXTITEM, TVGN_CARET as usize, 0).0);
+        let mut lost_selection = false;
+        for i in existing {
+            let item = self.nodes[i].item;
+            lost_selection |= item == selected;
+            send(self.hwnd, TVM_DELETEITEM, 0, item.0);
+            self.nodes[i].target = NavTarget::Removed;
+        }
+        let icon = stock_icon(SIID_FOLDER);
+        let mut current_item = None;
+        for n in names {
+            let bold = is_current(n);
+            let idx = self.insert_ex(root, n, NavTarget::Workspace(n.clone()), icon, false, bold);
+            if bold {
+                current_item = Some(self.nodes[idx].item);
+            }
+        }
+        let it = TVITEMEXW {
+            mask: TVIF_CHILDREN,
+            hItem: root,
+            cChildren: TVITEMEXW_CHILDREN(if names.is_empty() { 0 } else { 1 }),
+            ..Default::default()
+        };
+        send(self.hwnd, TVM_SETITEMW, 0, &it as *const _ as isize);
+        // Keep keyboard browsing going from the workspace that is now open.
+        if lost_selection && let Some(item) = current_item {
+            send(self.hwnd, TVM_SELECTITEM, TVGN_CARET as usize, item.0);
+        }
+    }
+
+    /// Target of the item at client coordinates.
+    pub fn target_at(&self, x: i32, y: i32) -> Option<&NavTarget> {
         let mut hit = TVHITTESTINFO {
             pt: POINT { x, y },
             ..Default::default()
@@ -136,11 +259,35 @@ impl NavTree {
         if item.0 == 0 {
             return None;
         }
-        self.nodes.iter().find(|n| n.item == item).map(|n| n.location.clone())
+        self.nodes.iter().find(|n| n.item == item).map(|n| &n.target)
+    }
+
+    pub fn node_target(&self, node: usize) -> Option<&NavTarget> {
+        self.nodes.get(node).map(|n| &n.target)
+    }
+
+    /// Expand "This PC" so drives are visible. Returns its node for loading.
+    pub fn expand_this_pc(&mut self) -> Option<usize> {
+        let i = self
+            .nodes
+            .iter()
+            .position(|n| matches!(&n.target, NavTarget::Folder(l) if l.as_str() == ROOTS[1]))?;
+        Some(i)
+    }
+
+    /// Location of the item at client coordinates.
+    pub fn location_at(&self, x: i32, y: i32) -> Option<Location> {
+        match self.target_at(x, y)? {
+            NavTarget::Folder(l) => Some(l.clone()),
+            _ => None,
+        }
     }
 
     pub fn node_location(&self, node: usize) -> Option<&Location> {
-        self.nodes.get(node).map(|n| &n.location)
+        match self.node_target(node)? {
+            NavTarget::Folder(l) => Some(l),
+            _ => None,
+        }
     }
 
     pub fn node_of_item(&self, param: isize) -> Option<usize> {
@@ -150,11 +297,14 @@ impl NavTree {
     /// Mark a node as loading; returns its location if it needs loading.
     pub fn begin_load(&mut self, node: usize) -> Option<Location> {
         let n = self.nodes.get_mut(node)?;
+        let NavTarget::Folder(loc) = &n.target else {
+            return None;
+        };
         if n.loaded {
             return None;
         }
         n.loaded = true;
-        Some(n.location.clone())
+        Some(loc.clone())
     }
 
     /// Remove every item; call `populate_roots` afterwards.
@@ -177,7 +327,7 @@ impl NavTree {
             if (c.hidden && !filter.show_hidden) || (dot && !filter.show_dotfiles) {
                 continue;
             }
-            self.insert(parent, &c.name, c.location, c.icon, c.has_children);
+            self.insert(parent, &c.name, NavTarget::Folder(c.location), c.icon, c.has_children);
             any = true;
         }
         if !any {
@@ -188,7 +338,7 @@ impl NavTree {
                 ..Default::default()
             };
             send(self.hwnd, TVM_SETITEMW, 0, &item as *const _ as isize);
-        } else if self.nodes[node].location.as_str() == ROOTS[1] {
+        } else if matches!(&self.nodes[node].target, NavTarget::Folder(l) if l.as_str() == ROOTS[1]) {
             send(self.hwnd, TVM_EXPAND, TVE_EXPAND.0 as usize, parent.0);
         }
     }

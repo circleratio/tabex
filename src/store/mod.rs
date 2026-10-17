@@ -79,6 +79,17 @@ pub fn open_or_create(
     }
 }
 
+/// Workspaces listed in the navigation tree: readable files only, in natural name order.
+pub fn tree_workspaces(base: &std::path::Path, fallback: &crate::model::workspace::Location) -> Vec<String> {
+    use crate::fs::{sort::compare_names, wide};
+    let mut names: Vec<String> = paths::list_workspaces(base)
+        .into_iter()
+        .filter(|n| workspace_file::load(&paths::workspace_path(base, n), n, fallback).is_ok())
+        .collect();
+    names.sort_by(|a, b| compare_names(&wide(a), &wide(b)));
+    names
+}
+
 /// Write `contents` so that readers never observe a partially written file.
 pub fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), StoreError> {
     use std::io::Write;
