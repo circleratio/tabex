@@ -239,6 +239,8 @@ pub struct Tab {
     pub view: ViewState,
     pub history: History,
     pub status: TabStatus,
+    /// Narrowing text of the list (runtime only, never saved). `Some("")` = input open.
+    pub narrow: Option<String>,
 }
 
 impl Tab {
@@ -249,6 +251,7 @@ impl Tab {
             view,
             history: History::default(),
             status: TabStatus::Loading,
+            narrow: None,
         }
     }
 }

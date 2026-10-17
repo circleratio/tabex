@@ -25,6 +25,7 @@ pub fn create_pane_ui(main: HWND, side: PaneSide, font: HFONT) -> Result<PaneUi>
         let tabbar = ui::tabbar::create(main, side)?;
         let (address, edit) = ui::addressbar::create(main, side, ID_EDIT[i], font)?;
         let list = listview::create(main, ID_LIST[i])?;
+        let (filter_bar, filter_edit) = ui::filterbar::create(main, side, ID_FILTER_EDIT[i], font)?;
         let mk = |class: PCWSTR, text: PCWSTR, style: u32, id: i32| {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -67,6 +68,8 @@ pub fn create_pane_ui(main: HWND, side: PaneSide, font: HFONT) -> Result<PaneUi>
             msg,
             retry,
             parent_btn,
+            filter_bar,
+            filter_edit,
             shown: None,
             rects: None,
             addr_error: false,
@@ -158,6 +161,7 @@ impl App {
             }
         }
         listview::set_count(p.list, 0);
+        self.sync_filter_bar(side);
     }
 
     fn bind(&mut self, side: PaneSide, id: TabId) {
@@ -186,6 +190,7 @@ impl App {
         }
         self.watch(side);
         self.place_placeholder(side);
+        self.sync_filter_bar(side);
     }
 
     fn watch(&self, side: PaneSide) {
@@ -254,6 +259,7 @@ impl App {
         let Some(tab) = self.tab(id) else { return };
         let location = tab.location.clone();
         let sort = tab.view.sort;
+        let query = tab.narrow.clone();
         let generation = self.next_generation;
         self.next_generation += 1;
         let filter = self.filter();
@@ -263,11 +269,12 @@ impl App {
         rt.cancel.store(true, Ordering::Relaxed);
         rt.cancel = cancel.clone();
         rt.generation = generation;
+        let fresh = || Listing::new(generation, filter).with_query(query.as_deref());
         if keep_old && rt.listing.is_some() {
-            rt.pending = Some(Listing::new(generation, filter));
+            rt.pending = Some(fresh());
         } else {
             rt.pending = None;
-            rt.listing = Some(Listing::new(generation, filter));
+            rt.listing = Some(fresh());
             if let Some(side) = self.shown_side(id) {
                 listview::set_count(self.panes[side.index()].list, 0);
             }
@@ -296,6 +303,7 @@ impl App {
     pub fn on_enum(&mut self, id: TabId, generation: u64, event: EnumEvent) {
         let Some(tab) = self.tab(id) else { return };
         let cmp = crate::fs::sort::comparator(tab.view.sort);
+        let query = tab.narrow.clone();
         let shown = self.shown_side(id);
         let filter = self.filter();
         let Some(rt) = self.rt.get_mut(&id) else { return };
@@ -353,7 +361,7 @@ impl App {
             }
             EnumEvent::Failed(e) => {
                 rt.pending = None;
-                let mut empty = Listing::new(generation, filter);
+                let mut empty = Listing::new(generation, filter).with_query(query.as_deref());
                 empty.complete = true;
                 rt.listing = Some(empty);
                 if let Some(t) = self.ws.tab_mut(id) {
@@ -386,10 +394,14 @@ impl App {
             rt.select_on_load = None;
             focus = Some(pos);
         }
+        // Copy what the control needs and release the listing before calling into it: the
+        // control's change notifications re-enter the App.
+        let len = l.len();
+        let selected = (l.selection_count() > 0 || full_redraw).then(|| l.selected_positions());
         self.suppress_selection = true;
-        listview::set_count(list, l.len());
-        if l.selection_count() > 0 || full_redraw {
-            listview::apply_selection(list, l);
+        listview::set_count(list, len);
+        if let Some(positions) = &selected {
+            listview::select_positions(list, positions);
         }
         if let Some(pos) = focus {
             listview::set_focused(list, pos);
@@ -403,6 +415,7 @@ impl App {
         if self.ws.active_tab().id == id {
             self.update_status();
         }
+        self.invalidate_filter_bar(side);
         if self.pending_rename.as_ref().is_some_and(|(t, _)| *t == id) {
             self.try_pending_rename();
         }
@@ -466,6 +479,8 @@ impl App {
             tab.history.push(cur);
         }
         tab.location = loc.clone();
+        // Narrowing belongs to the folder it was typed in.
+        tab.narrow = None;
         self.ensure_rt(id);
         let rt = self.rt.get_mut(&id).unwrap();
         rt.title = names::display_name(&loc);
@@ -481,6 +496,7 @@ impl App {
             self.panes[side.index()].addr_error = false;
             self.watch(side);
             self.place_placeholder(side);
+            self.sync_filter_bar(side);
         }
         self.mark_dirty();
         self.invalidate_chrome();

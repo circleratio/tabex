@@ -123,6 +123,7 @@ pub struct Tab {
     pub view: ViewState,
     pub history: History,          // runtime only
     pub status: TabStatus,         // runtime only
+    pub narrow: Option<String>,    // runtime only: narrowing text (requirement 6.1), None = off
 }
 
 pub struct ViewState {
@@ -180,6 +181,7 @@ pub struct Listing {
 - 隠しファイル・システムファイルを表示しない設定は、`order` を作るときに該当項目を除くことで実現する。設定を切り替えても列挙し直す必要はない。
   - 判定には隠し属性を使う。保護された OS ファイル（隠し属性とシステム属性の両方を持つもの）も、この切り替えに従う。システム属性だけを持つファイルは、エクスプローラと同じく常に表示する。
   - ドットファイル（名前の先頭が `.`）は、`Filter::show_dotfiles` で別に判定する。`Filter::accepts` は「隠し属性の判定」と「ドットファイルの判定」の両方を通った項目だけを表示する。名前だけで決まるので、ドライブのルートを含め、追加のファイルアクセスは発生しない。
+- 絞り込み表示（要求仕様 6.1）も `order` を作るときの条件として扱う（7.9）。`Listing` は小文字にした絞り込み文字列 `query: Option<String>` を持ち、`Filter::accepts` と絞り込みの両方を通った項目だけを `order` に入れる。
 - 選択状態は `HashSet<u32>`（`entries` の添字）で別に持つ。ソート順が変わったら、ListView 側の選択状態をこの集合から付け直す。
 - 再読み込み（F5、監視のあふれ、表示し直し）では新しい `Listing` を裏で作り、完了したら差し替える。選択状態とフォーカスは名前で引き継ぐ。
 - `Entry::icon` の値 `-2`（`THUMB_ICON`）は「サムネイルを描く」という意味で、ListView には `I_IMAGENONE` として渡す。
@@ -480,6 +482,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 | Ctrl+Alt+W | WorkspaceList | Ctrl+Shift+1..5 | SetViewMode |
 | J / K | CursorDown / CursorUp | Shift+J / Shift+K | ExtendSelectionDown / ExtendSelectionUp |
 | H / L | PrevTab / NextTab | | |
+| / | NarrowStart | Esc（一覧） | NarrowClear |
 
 #### 7.7.1 vi 風のカーソル移動（hjkl）
 
@@ -512,6 +515,62 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 - DPI はモニターごとの設定に対応する（Per-Monitor V2）。`WM_DPICHANGED` を受けたら、フォントとイメージリストを作り直し、レイアウトを計算し直す。
 - OS がダークモードのときは、`DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` でタイトルバーだけを暗くする。ウィンドウの中身までは対応しない（要求仕様で対象外としたため）。
+
+### 7.9 絞り込み表示（`ui::filterbar`）
+
+#### データ
+
+- 絞り込み文字列はタブごとに `Tab::narrow` に持つ。`None` は絞り込みなし、`Some("")` は「入力欄は出ているが、まだ何も入力していない」状態（全件を表示する）。
+  - `Tab` の実行時だけの値なので、ワークスペースファイルには書かない（DTO に項目を作らない）。
+  - タブの複製（`duplicate_tab`）は `Tab::new` で作るので、絞り込みは引き継がない。
+  - `Listing` は LRU で捨てられることがある（3.3）が、文字列は `Tab` にあるので、列挙し直しても絞り込みは保たれる。
+- `model::listing` に追加するもの:
+
+  ```rust
+  /// Case-insensitive substring match; `query` must already be lowercase.
+  pub fn name_matches(name: &[u16], query: &str) -> bool
+  impl Listing {
+      pub fn set_query(&mut self, query: Option<&str>, cmp: Cmp) // lowercases, re-sorts if changed
+      pub fn total_len(&self) -> usize // live entries passing `Filter` only (the "m" of "n / m")
+  }
+  ```
+
+  - 比較は名前全体（拡張子を含む）を `str::to_lowercase` で小文字にして `contains` で調べる。全角英字も Unicode の規則で大小を区別しない。
+  - `append_chunk` / `insert` / `update` / `rename` / `resort` はすべて同じ判定を使う。これで、監視による追加・名前変更にも絞り込みが効き、条件に合わなくなった項目は選択からも外れる。
+  - `select_all` は `order` だけを選ぶので、隠れた項目は選ばれない。
+- `start_enum` と列挙失敗時に `Listing` を作るときは、`Tab::narrow` を `set_query` で渡す。F5 で作り直しても絞り込みは保たれる。
+- `navigate`（戻る / 進む / 上へを含む）では、移動の前に `Tab::narrow` を `None` にする。
+
+#### 入力欄
+
+- ペインごとに `TabexFilterBar`（独自クラス）を 1 つ作り、その中に Edit コントロールを置く。`PaneUi` に `filter_bar` と `filter_edit` を足す。
+  - バーは左端に「/」、右端に件数 `n / m 件`（`Listing::len()` / `total_len()`）を描き、その間に Edit を置く。フォントは一覧と同じものを使う。
+  - 表示するのは、そのペインで表示中のタブの `narrow` が `Some` のときだけ。
+- レイアウト: `LayoutState` に `filter_bar: [bool; 2]` を、`PaneRects` に `filter: Option<Rect>` を足す。表示するペインでは、一覧の下端から `FILTERBAR_HEIGHT`（28px、96 DPI 換算）を取り、その分だけ一覧を縮める。
+- Edit はサブクラス化（アドレスバーと同じ方式）して、次のキーを自分で処理する。`WM_GETDLGCODE` で全キーを受け取り、Enter と Esc の `WM_CHAR` は捨ててビープ音を防ぐ。
+
+| キー | 処理 |
+|---|---|
+| 文字の入力・削除（`EN_CHANGE`） | `Tab::narrow` を更新し、`set_query` → `after_listing_change(id, true)` で一覧を描き直す。件数も描き直す |
+| ↑ / ↓ | そのペインの一覧で `cursor_step(side, ∓1, false)`（7.7.1）を行う。フォーカスは Edit に残す |
+| Enter | 確定。フォーカスを一覧に移す。選択がなく 1 件以上あれば先頭を選んでフォーカスを置く |
+| Esc | 解除（下記） |
+| Backspace（Edit が空のとき） | 解除 |
+
+- 解除: `Tab::narrow = None`、`set_query(None)`、入力欄を隠してレイアウトし直し、一覧にフォーカスを戻す。`App::clear_narrow(side)` にまとめる。
+- 入力欄をクリックしたときは、Edit がそのままフォーカスを受けるので、確定済みの文字列を編集できる。
+
+#### コマンドとキー
+
+- `Command::NarrowStart`（名前 `Narrow`）: 既定は `/` キー。一覧にフォーカスがあるときだけ効く（`is_list_command` に含める）。`narrow` を `Some`（既にあればそのまま）にして入力欄を出し、Edit に今の文字列を入れてキャレットを末尾に置き、フォーカスを移す。
+- `Command::NarrowClear`（名前 `NarrowClear`）: 既定は Esc。一覧にフォーカスがあるときだけ効き、絞り込み中でなければ何もしない。
+- `/` は `VK_OEM_2`（0xBF）。US 配列・日本語配列のどちらでも `/` のキーに当たる。`parse_key` で `"/"` と `"Slash"` を、`"Esc"` は既存どおり受け付ける。
+- `is_list_only_key` の対象に記号キー（`VK_OEM_1`〜`VK_OEM_102`: 0xBA〜0xE2）も含める。こうしないと、Edit やツリーで `/` を打ったときに横取りしてしまう。
+
+#### タブの切り替え
+
+- `bind`（タブを表示するとき）で、そのタブの `narrow` に合わせて入力欄を出し入れし、Edit の文字列を入れ替える。このとき `EN_CHANGE` で同じ処理が走らないよう、フラグで抑える。
+- `unbind` では入力欄を隠す。
 
 ## 8. 起動、単一インスタンス、コマンドライン
 
@@ -617,8 +676,8 @@ strip = true
 |---|---|
 | `model::tabs` | タブを開く・閉じる・移動・複製したとき、`active_tab` が正しく付け替わること。最後の 1 タブを閉じたときの動き。ペインをまたぐ移動。閉じたタブの再オープン（上限の 20 件を超えたとき） |
 | `model::history` | 戻る・進むの動き。新しく移動したら進む用の履歴が消えること。上限の 100 件 |
-| `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき |
-| `model::layout` | 1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
+| `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき。絞り込み（`name_matches` の大小無視・拡張子を含むこと・日本語、`set_query` での絞り込みと解除、隠しファイル設定との組み合わせ、追加・名前変更・削除への追従、隠れた項目が選択から外れること、`total_len`） |
+| `model::layout` | 絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
 | `store::config` | 既定値（`nav_workspaces_expanded` が `true` になることを含む）、往復、最近使った一覧、知らない version |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
@@ -626,7 +685,7 @@ strip = true
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
 | `fs::sort` | 自然順（`file2` が `file10` より前）、フォルダが先に来ること、昇順・降順、値が同じときの並び |
 | `model::workspace` | 親フォルダの求め方（ドライブのルート、UNC）、パンくずの分割、タブタイトル |
-| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`）と hjkl の既定の割り当て |
+| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
 | `shell::dragdrop` | ドロップ効果の決定（Ctrl・Shift、同じドライブかどうか、UNC、許可されていない効果） |

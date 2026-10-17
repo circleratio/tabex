@@ -37,6 +37,7 @@ impl Rect {
 pub const TABBAR_HEIGHT: i32 = 32;
 pub const ADDRESS_HEIGHT: i32 = 32;
 pub const STATUS_HEIGHT: i32 = 24;
+pub const FILTERBAR_HEIGHT: i32 = 28;
 pub const SPLITTER_WIDTH: i32 = 6;
 pub const DEFAULT_NAV_WIDTH: i32 = 220;
 pub const MIN_NAV_WIDTH: i32 = 80;
@@ -49,6 +50,8 @@ pub struct LayoutState {
     pub nav_visible: bool,
     /// 96-DPI pixels.
     pub nav_width: i32,
+    /// Narrowing input shown under the list, indexed by `PaneSide::index()`.
+    pub filter_bar: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,6 +59,8 @@ pub struct PaneRects {
     pub tabbar: Rect,
     pub address: Rect,
     pub list: Rect,
+    /// Narrowing input under the list, when shown.
+    pub filter: Option<Rect>,
     pub whole: Rect,
 }
 
@@ -94,7 +99,8 @@ pub fn compute(client: Rect, dpi: u32, st: &LayoutState) -> LayoutRects {
     let area = Rect::new(x, body.top, body.right, body.bottom);
     match st.layout {
         Layout::Single => {
-            out.panes[st.active_pane.index()] = Some(pane_rects(area, dpi));
+            let i = st.active_pane.index();
+            out.panes[i] = Some(pane_rects(area, dpi, st.filter_bar[i]));
         }
         Layout::Dual => {
             let avail = (area.width() - split_w).max(0);
@@ -102,24 +108,29 @@ pub fn compute(client: Rect, dpi: u32, st: &LayoutState) -> LayoutRects {
             let left = Rect::new(area.left, area.top, area.left + left_w, area.bottom);
             let splitter = Rect::new(left.right, area.top, left.right + split_w, area.bottom);
             let right = Rect::new(splitter.right, area.top, area.right, area.bottom);
-            out.panes[0] = Some(pane_rects(left, dpi));
-            out.panes[1] = Some(pane_rects(right, dpi));
+            out.panes[0] = Some(pane_rects(left, dpi, st.filter_bar[0]));
+            out.panes[1] = Some(pane_rects(right, dpi, st.filter_bar[1]));
             out.pane_splitter = Some(splitter);
         }
     }
     out
 }
 
-fn pane_rects(r: Rect, dpi: u32) -> PaneRects {
+fn pane_rects(r: Rect, dpi: u32, filter_bar: bool) -> PaneRects {
     let tab_h = scale(TABBAR_HEIGHT, dpi);
     let addr_h = scale(ADDRESS_HEIGHT, dpi);
     let tabbar = Rect::new(r.left, r.top, r.right, r.top + tab_h);
     let address = Rect::new(r.left, tabbar.bottom, r.right, tabbar.bottom + addr_h);
-    let list = Rect::new(r.left, address.bottom, r.right, r.bottom);
+    let filter = filter_bar.then(|| {
+        let top = (r.bottom - scale(FILTERBAR_HEIGHT, dpi)).max(address.bottom);
+        Rect::new(r.left, top, r.right, r.bottom)
+    });
+    let list = Rect::new(r.left, address.bottom, r.right, filter.map_or(r.bottom, |f| f.top));
     PaneRects {
         tabbar,
         address,
         list,
+        filter,
         whole: r,
     }
 }
@@ -151,6 +162,7 @@ mod tests {
             active_pane: PaneSide::Right,
             nav_visible: nav,
             nav_width: 200,
+            filter_bar: [false; 2],
         }
     }
 
@@ -214,6 +226,28 @@ mod tests {
     fn tiny_window_does_not_panic() {
         let r = compute(Rect::new(0, 0, 10, 10), 96, &st(Layout::Dual, true));
         assert!(r.panes[0].unwrap().list.height() >= 0);
+    }
+
+    #[test]
+    fn filter_bar_shrinks_only_its_pane() {
+        let mut s = st(Layout::Dual, false);
+        s.filter_bar = [true, false];
+        let r = compute(CLIENT, 96, &s);
+        let l = r.panes[0].unwrap();
+        let rr = r.panes[1].unwrap();
+        assert_eq!(l.filter, Some(Rect::new(0, 776 - FILTERBAR_HEIGHT, 600, 776)));
+        assert_eq!(l.list.bottom, 776 - FILTERBAR_HEIGHT);
+        assert!(rr.filter.is_none());
+        assert_eq!(rr.list.bottom, 776);
+        // Single layout uses the flag of the pane that is shown.
+        let mut s = st(Layout::Single, false);
+        s.filter_bar = [false, true];
+        let p = compute(CLIENT, 144, &s).panes[1].unwrap();
+        assert_eq!(p.filter.unwrap().height(), 42);
+        // Never overlaps the address bar in a tiny window.
+        let p = compute(Rect::new(0, 0, 100, 80), 96, &s).panes[1].unwrap();
+        assert!(p.filter.unwrap().top >= p.address.bottom);
+        assert!(p.list.height() >= 0);
     }
 
     #[test]

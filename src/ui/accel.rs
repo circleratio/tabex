@@ -29,6 +29,8 @@ const VK_DOWN: u16 = 0x28;
 const VK_INSERT: u16 = 0x2D;
 const VK_DELETE: u16 = 0x2E;
 const VK_F1: u16 = 0x70;
+/// "/?" key on both US and Japanese layouts.
+const VK_OEM_2: u16 = 0xBF;
 
 pub fn parse_key(s: &str) -> Option<KeySpec> {
     let mut k = KeySpec {
@@ -64,6 +66,7 @@ pub fn parse_key(s: &str) -> Option<KeySpec> {
         "down" | "↓" => VK_DOWN,
         "insert" => VK_INSERT,
         "delete" | "del" => VK_DELETE,
+        "/" | "slash" => VK_OEM_2,
         _ if lower.len() == 1 && lower.as_bytes()[0].is_ascii_alphanumeric() => {
             lower.to_ascii_uppercase().as_bytes()[0] as u16
         }
@@ -124,6 +127,8 @@ pub fn default_bindings() -> Vec<(&'static str, Command)> {
         ("Shift+K", ExtendSelectionUp),
         ("H", PrevTab),
         ("L", NextTab),
+        ("/", NarrowStart),
+        ("Esc", NarrowClear),
     ];
     const DIGITS: [&str; 9] = [
         "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9",
@@ -151,14 +156,16 @@ pub fn is_list_command(c: &Command) -> bool {
             | Command::CursorUp
             | Command::ExtendSelectionDown
             | Command::ExtendSelectionUp
+            | Command::NarrowStart
+            | Command::NarrowClear
     )
 }
 
 /// Plain letter / digit keys (Shift allowed) are bound only while the file list has focus,
 /// so the tree's type-ahead and text input elsewhere keep working.
 pub fn is_list_only_key(k: &KeySpec) -> bool {
-    // VK codes: '0'..'9' = 0x30..0x39, 'A'..'Z' = 0x41..0x5A.
-    !k.ctrl && !k.alt && matches!(k.vk, 0x30..=0x39 | 0x41..=0x5A)
+    // VK codes: '0'..'9' = 0x30..0x39, 'A'..'Z' = 0x41..0x5A, punctuation (VK_OEM_*) = 0xBA..0xE2.
+    !k.ctrl && !k.alt && matches!(k.vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xE2)
 }
 
 /// Keys an edit control needs for itself; never steal them while editing text.
@@ -284,6 +291,19 @@ mod tests {
         assert!(!is_list_only_key(&parse_key("Tab").unwrap()));
         assert!(!is_list_only_key(&parse_key("Down").unwrap()));
         assert!(!is_list_only_key(&parse_key("F5").unwrap()));
+        assert!(is_list_only_key(&parse_key("/").unwrap()));
+        assert!(is_list_only_key(&parse_key("Shift+/").unwrap()));
+    }
+
+    #[test]
+    fn narrow_keys() {
+        assert_eq!(parse_key("/").unwrap().vk, 0xBF);
+        assert_eq!(parse_key("Slash"), parse_key("/"));
+        let (m, _) = KeyMap::new(&BTreeMap::new());
+        assert_eq!(m.lookup(&parse_key("/").unwrap()), Some(&Command::NarrowStart));
+        assert_eq!(m.lookup(&parse_key("Esc").unwrap()), Some(&Command::NarrowClear));
+        assert!(is_list_command(&Command::NarrowStart));
+        assert!(is_list_command(&Command::NarrowClear));
     }
 
     #[test]

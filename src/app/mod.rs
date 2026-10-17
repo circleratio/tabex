@@ -3,6 +3,7 @@
 mod commands;
 mod menu;
 mod middle;
+mod narrow;
 mod panes;
 mod shellops;
 mod tree;
@@ -50,6 +51,7 @@ pub const ID_LIST: [i32; 2] = [100, 101];
 pub const ID_EDIT: [i32; 2] = [130, 131];
 pub const ID_RETRY: [i32; 2] = [150, 151];
 pub const ID_PARENT: [i32; 2] = [160, 161];
+pub const ID_FILTER_EDIT: [i32; 2] = [170, 171];
 pub const ID_TREE: i32 = 110;
 pub const ID_STATUS: i32 = 120;
 
@@ -107,6 +109,9 @@ pub struct PaneUi {
     pub msg: HWND,
     pub retry: HWND,
     pub parent_btn: HWND,
+    /// Narrowing input under the list and its edit control.
+    pub filter_bar: HWND,
+    pub filter_edit: HWND,
     pub shown: Option<TabId>,
     pub rects: Option<layout::PaneRects>,
     pub addr_error: bool,
@@ -147,6 +152,8 @@ pub struct App {
     pub home: Location,
     pub next_generation: u64,
     pub suppress_selection: bool,
+    /// Set while the filter bar text is replaced programmatically (ignore EN_CHANGE).
+    pub narrow_syncing: bool,
     pub split_drag: Option<SplitDrag>,
     pub tab_drag: Option<TabDrag>,
     pub menu: menu::MenuState,
@@ -213,6 +220,7 @@ unsafe fn register_classes(instance: HINSTANCE) -> Result<()> {
         RegisterClassExW(&main);
         ui::tabbar::register(instance, cursor)?;
         ui::addressbar::register(instance, cursor)?;
+        ui::filterbar::register(instance, cursor)?;
     }
     Ok(())
 }
@@ -362,6 +370,7 @@ impl App {
             home,
             next_generation: 1,
             suppress_selection: false,
+            narrow_syncing: false,
             split_drag: None,
             tab_drag: None,
             menu: menu::MenuState::default(),
@@ -397,7 +406,7 @@ impl App {
             SendMessageW(h, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), Some(LPARAM(1)));
         };
         for p in &self.panes {
-            for h in [p.list, p.edit, p.msg, p.retry, p.parent_btn] {
+            for h in [p.list, p.edit, p.filter_edit, p.msg, p.retry, p.parent_btn] {
                 set(h);
             }
         }
@@ -412,6 +421,7 @@ impl App {
             active_pane: self.ws.active_pane,
             nav_visible: self.config.nav_tree_visible,
             nav_width: self.config.nav_width,
+            filter_bar: PaneSide::BOTH.map(|side| self.narrow_of(side).is_some()),
         }
     }
 
@@ -435,9 +445,10 @@ impl App {
                     ui::place(p.tabbar, pr.tabbar, true);
                     ui::place(p.address, pr.address, true);
                     ui::place(p.list, pr.list, true);
+                    ui::place(p.filter_bar, pr.filter.unwrap_or_default(), pr.filter.is_some());
                 }
                 None => {
-                    for h in [p.tabbar, p.address, p.list] {
+                    for h in [p.tabbar, p.address, p.list, p.filter_bar] {
                         ui::place(h, Rect::default(), false);
                     }
                 }
@@ -570,8 +581,12 @@ impl App {
     pub fn pane_of_hwnd(&self, h: HWND) -> Option<PaneSide> {
         PaneSide::BOTH.into_iter().find(|s| {
             let p = &self.panes[s.index()];
-            [p.list, p.tabbar, p.address, p.edit, p.retry, p.parent_btn].contains(&h)
-                || unsafe { IsChild(p.list, h).as_bool() || IsChild(p.address, h).as_bool() }
+            [p.list, p.tabbar, p.address, p.edit, p.retry, p.parent_btn, p.filter_bar].contains(&h)
+                || unsafe {
+                    IsChild(p.list, h).as_bool()
+                        || IsChild(p.address, h).as_bool()
+                        || IsChild(p.filter_bar, h).as_bool()
+                }
         })
     }
 

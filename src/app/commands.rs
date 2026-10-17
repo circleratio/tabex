@@ -163,6 +163,8 @@ impl App {
             CursorUp => self.cursor_step(side, -1, false),
             ExtendSelectionDown => self.cursor_step(side, 1, true),
             ExtendSelectionUp => self.cursor_step(side, -1, true),
+            NarrowStart => self.narrow_start(side),
+            NarrowClear => self.clear_narrow(side),
             SetViewMode(mode) => {
                 self.capture_view(side);
                 let tab = self.ws.active_tab_mut();
@@ -265,15 +267,39 @@ impl App {
     }
 
     /// Move (or extend) the list selection by one row, like the arrow keys.
-    fn cursor_step(&mut self, side: PaneSide, delta: isize, extend: bool) {
+    pub fn cursor_step(&mut self, side: PaneSide, delta: isize, extend: bool) {
         let list = self.panes[side.index()].list;
-        let id = self.ws.active_tab().id;
-        let Some(len) = self.rt.get(&id).and_then(|r| r.listing.as_ref()).map(|l| l.len()) else {
-            return;
-        };
+        let Some(len) = self.shown_len(side) else { return };
         let focus = listview::focused(list);
         let mark = listview::selection_mark(list);
         let Some(m) = crate::model::listing::cursor_step(len, focus, mark, delta, extend) else {
+            return;
+        };
+        self.apply_cursor(side, m);
+    }
+
+    /// Select only row `pos` and focus it.
+    pub fn select_row(&mut self, side: PaneSide, pos: usize) {
+        if self.shown_len(side).is_some_and(|n| pos < n) {
+            self.apply_cursor(
+                side,
+                crate::model::listing::CursorMove {
+                    focus: pos,
+                    select: pos..=pos,
+                    mark: pos,
+                },
+            );
+        }
+    }
+
+    fn shown_len(&self, side: PaneSide) -> Option<usize> {
+        let id = self.panes[side.index()].shown?;
+        self.rt.get(&id)?.listing.as_ref().map(|l| l.len())
+    }
+
+    fn apply_cursor(&mut self, side: PaneSide, m: crate::model::listing::CursorMove) {
+        let list = self.panes[side.index()].list;
+        let Some(id) = self.panes[side.index()].shown else {
             return;
         };
         // Update the control first without holding a borrow of the listing: its change

@@ -75,6 +75,16 @@ pub fn is_dot_name(name: &[u16]) -> bool {
 
 pub type Cmp<'a> = &'a dyn Fn(&Entry, &Entry) -> Ordering;
 
+/// Case-insensitive substring match on the whole name; `query` must already be lowercase.
+pub fn name_matches(name: &[u16], query: &str) -> bool {
+    query.is_empty() || String::from_utf16_lossy(name).to_lowercase().contains(query)
+}
+
+/// Shown in the view: passes the hidden / dot-file filter and the narrowing text.
+fn visible(filter: Filter, query: Option<&str>, e: &Entry) -> bool {
+    filter.accepts(e) && query.is_none_or(|q| name_matches(&e.name, q))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     pub show_hidden: bool,
@@ -98,6 +108,8 @@ pub struct Listing {
     entries: Vec<Entry>,
     order: Vec<u32>,
     filter: Filter,
+    /// Lowercase narrowing text (requirement 6.1).
+    query: Option<String>,
     selection: HashSet<u32>,
     dead: usize,
 }
@@ -109,6 +121,12 @@ impl Listing {
             filter,
             ..Default::default()
         }
+    }
+
+    /// Start with a narrowing text (for a listing that is still empty).
+    pub fn with_query(mut self, query: Option<&str>) -> Self {
+        self.query = query.map(str::to_lowercase);
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -165,8 +183,9 @@ impl Listing {
         let start = self.entries.len() as u32;
         self.entries.extend(chunk);
         let entries = &self.entries;
+        let (filter, query) = (self.filter, self.query.as_deref());
         let mut fresh: Vec<u32> = (start..entries.len() as u32)
-            .filter(|&id| self.filter.accepts(&entries[id as usize]))
+            .filter(|&id| visible(filter, query, &entries[id as usize]))
             .collect();
         fresh.sort_by(|&a, &b| cmp(&entries[a as usize], &entries[b as usize]));
         if self.order.is_empty() {
@@ -193,11 +212,13 @@ impl Listing {
     /// Rebuild the view from scratch (sort order or filter changed).
     pub fn resort(&mut self, cmp: Cmp) {
         let entries = &self.entries;
+        let (filter, query) = (self.filter, self.query.as_deref());
         let mut order: Vec<u32> = (0..entries.len() as u32)
-            .filter(|&id| self.filter.accepts(&entries[id as usize]))
+            .filter(|&id| visible(filter, query, &entries[id as usize]))
             .collect();
         order.sort_by(|&a, &b| cmp(&entries[a as usize], &entries[b as usize]));
-        self.selection.retain(|id| self.filter.accepts(&entries[*id as usize]));
+        self.selection
+            .retain(|id| visible(filter, query, &entries[*id as usize]));
         self.order = order;
     }
 
@@ -208,9 +229,23 @@ impl Listing {
         }
     }
 
+    /// Narrow the view to names containing `query` (case-insensitive); `None` shows all.
+    pub fn set_query(&mut self, query: Option<&str>, cmp: Cmp) {
+        let query = query.map(str::to_lowercase);
+        if self.query != query {
+            self.query = query;
+            self.resort(cmp);
+        }
+    }
+
+    /// Live entries passing the hidden / dot-file filter, ignoring the narrowing text.
+    pub fn total_len(&self) -> usize {
+        self.entries.iter().filter(|e| self.filter.accepts(e)).count()
+    }
+
     fn insert_into_order(&mut self, id: u32, cmp: Cmp) -> Option<usize> {
         let e = &self.entries[id as usize];
-        if !self.filter.accepts(e) {
+        if !visible(self.filter, self.query.as_deref(), e) {
             return None;
         }
         let entries = &self.entries;
@@ -741,5 +776,65 @@ pub(crate) mod tests {
         // At the end the range stays put.
         assert_eq!(step(6, Some(5), Some(4), 1, true), (5, (4, 5), 4));
         assert_eq!(step(6, None, None, 1, true), (0, (0, 0), 0));
+    }
+
+    #[test]
+    fn name_matching() {
+        assert!(name_matches(&w("Banana.DAT"), "banana"));
+        assert!(name_matches(&w("Banana.DAT"), "a.d"));
+        assert!(name_matches(&w("日本語メモ.txt"), "メモ"));
+        assert!(name_matches(&w("ＡＢＣ.txt"), "ａｂｃ"));
+        assert!(name_matches(&w("anything"), ""));
+        assert!(!name_matches(&w("apple.dat"), "pear"));
+    }
+
+    #[test]
+    fn narrowing_view() {
+        let mut l = Listing::new(1, Filter::default());
+        let names_in = ["f1.txt", "f10.txt", "f2.txt", "apple.dat", "Banana.DAT", ".f1rc"];
+        l.append_chunk(names_in.iter().map(|n| f(n)).collect(), &by_name);
+        assert_eq!(l.len(), 5); // dot file hidden by the filter
+        l.set_query(Some("F1"), &by_name);
+        assert_eq!(names(&l), ["f1.txt", "f10.txt"]);
+        assert_eq!(l.total_len(), 5);
+        l.set_query(Some("dat"), &by_name);
+        assert_eq!(names(&l), ["apple.dat", "Banana.DAT"]);
+        // Showing dot files only adds names that also match the text.
+        l.set_filter(
+            Filter {
+                show_dotfiles: true,
+                ..Default::default()
+            },
+            &by_name,
+        );
+        l.set_query(Some("f1"), &by_name);
+        assert_eq!(names(&l), [".f1rc", "f1.txt", "f10.txt"]);
+        assert_eq!(l.total_len(), 6);
+        l.set_query(None, &by_name);
+        assert_eq!(l.len(), 6);
+    }
+
+    #[test]
+    fn narrowing_follows_changes_and_drops_hidden_selection() {
+        let mut l = Listing::new(1, Filter::default());
+        l.append_chunk(vec![f("f1.txt"), f("f2.txt"), f("g1.txt")], &by_name);
+        l.select_all();
+        l.set_query(Some("f"), &by_name);
+        // g1 is no longer visible, so it cannot stay selected.
+        assert_eq!(l.selection_count(), 2);
+        l.select_all();
+        assert_eq!(l.selection_count(), 2);
+        assert_eq!(l.insert(f("f3.txt"), &by_name), Some(2));
+        assert_eq!(l.insert(f("zzz.txt"), &by_name), None);
+        assert_eq!(names(&l), ["f1.txt", "f2.txt", "f3.txt"]);
+        // Renamed out of the filter: leaves the view and the selection.
+        assert_eq!(l.rename(&w("f1.txt"), &w("x1.txt"), &by_name), None);
+        assert_eq!(names(&l), ["f2.txt", "f3.txt"]);
+        assert_eq!(l.selection_count(), 1);
+        // Renamed into the filter: appears.
+        assert!(l.rename(&w("zzz.txt"), &w("f9.txt"), &by_name).is_some());
+        assert!(l.remove(&w("f2.txt")));
+        assert_eq!(names(&l), ["f3.txt", "f9.txt"]);
+        assert_eq!(l.total_len(), 4);
     }
 }

@@ -168,8 +168,13 @@ fn set_state(hwnd: HWND, index: i32, state: LIST_VIEW_ITEM_STATE_FLAGS, mask: LI
 
 /// Push the model selection into the control.
 pub fn apply_selection(hwnd: HWND, listing: &Listing) {
+    select_positions(hwnd, &listing.selected_positions());
+}
+
+/// Select exactly the rows in `positions`.
+pub fn select_positions(hwnd: HWND, positions: &[usize]) {
     set_state(hwnd, -1, LIST_VIEW_ITEM_STATE_FLAGS(0), LVIS_SELECTED);
-    for p in listing.selected_positions() {
+    for &p in positions {
         set_state(hwnd, p as i32, LVIS_SELECTED, LVIS_SELECTED);
     }
 }

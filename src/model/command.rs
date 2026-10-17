@@ -49,6 +49,10 @@ pub enum Command {
     /// Extend the selection one row down / up (Shift+J / Shift+K).
     ExtendSelectionDown,
     ExtendSelectionUp,
+    /// Open (or re-edit) the narrowing input of the list ("/").
+    NarrowStart,
+    /// Leave narrowing and show every item again (Esc in the list).
+    NarrowClear,
 
     SetViewMode(ViewMode),
     SortBy(ColumnId),
@@ -104,6 +108,8 @@ impl Command {
             "CursorUp" => CursorUp,
             "ExtendSelectionDown" => ExtendSelectionDown,
             "ExtendSelectionUp" => ExtendSelectionUp,
+            "Narrow" => NarrowStart,
+            "NarrowClear" => NarrowClear,
             "ToggleHidden" => ToggleHidden,
             "ToggleDotfiles" => ToggleDotfiles,
             "ToggleExtensions" => ToggleExtensions,
@@ -141,6 +147,8 @@ mod tests {
             Command::from_name("ExtendSelectionUp"),
             Some(Command::ExtendSelectionUp)
         );
+        assert_eq!(Command::from_name("Narrow"), Some(Command::NarrowStart));
+        assert_eq!(Command::from_name("NarrowClear"), Some(Command::NarrowClear));
         assert_eq!(Command::from_name("SelectTab0"), None);
         assert_eq!(Command::from_name("nope"), None);
     }

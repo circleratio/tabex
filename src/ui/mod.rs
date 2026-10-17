@@ -3,6 +3,7 @@
 pub mod accel;
 pub mod addressbar;
 pub mod dpi;
+pub mod filterbar;
 pub mod format;
 pub mod listview;
 pub mod navtree;
