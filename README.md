@@ -96,6 +96,19 @@ Ctrl+U / Ctrl+B は「上へ」と同じく 1 つ上のフォルダへ移動し�
 - 確定後にもう一度 `/` を押すか入力欄をクリックすると、文字列を編集できます。
 - 絞り込みはタブごとに保たれ、別のフォルダへ移動すると解除されます。ワークスペースには保存されません。
 
+#### migemo（ローマ字で日本語の名前を絞り込む）
+
+tabex.exe と同じフォルダに [rustmigemo](https://github.com/oguna/rustmigemo) の `rustmigemo.dll` と辞書 `migemo-compact-dict` を置くと、絞り込みに migemo が使われ、ローマ字の入力で日本語の名前が見つかるようになります（例: `kaisha` で「会社案内.pdf」「かいしゃ.txt」「カイシャ.txt」）。どちらも tabex には同梱していないので、次の手順で用意してください。
+
+1. rustmigemo をビルドする: `cargo build --features windows-dll --target x86_64-pc-windows-msvc --release`（`target\x86_64-pc-windows-msvc\release\rustmigemo.dll` ができます）
+2. [migemo-compact-dict-latest](https://github.com/oguna/migemo-compact-dict-latest) のリリースから `migemo-compact-dict` をダウンロードする
+3. 2 つのファイルを tabex.exe と同じフォルダに置く
+
+- migemo が使われているときは、入力欄の右端に `migemo` と表示されます。これまでの部分一致で見つかる項目は、migemo を使っても必ず表示されます。
+- DLL と辞書は、最初に `/` を押したときに読み込みます。辞書が見つからないなどで使えないときは、ステータスバーに理由が 1 度だけ表示され、部分一致だけで動きます。
+- DLL を置いたまま migemo を止めたいときは、`config.toml` に `migemo = false` と書きます。
+- どの語が日本語に展開されるかは rustmigemo と辞書しだいです。手元で確かめた範囲では、`kaisha`（会社）や `toukyou`（東京）は展開されますが、`kensaku`（検索）や `kanji`（漢字）はかな・カナにしか展開されませんでした。
+
 ### コマンド行（`:sh` でシェルを開く）
 
 ファイル一覧で `:` を入力すると、一覧の下に `:` の入力欄が現れます（US 配列なら Shift+;、日本語配列なら : キー）。コマンドを入力して Enter で実行し、Esc（または空のときの Backspace）で取り消します。
@@ -115,13 +128,14 @@ Ctrl+U / Ctrl+B は「上へ」と同じく 1 つ上のフォルダへ移動し�
 
 | ファイル | 内容 |
 |---|---|
-| `%APPDATA%\tabex\config.toml` | 前回のワークスペース、最近使ったワークスペース、表示設定（ナビゲーションツリーの「ワークスペース」の開閉を含む）、ウィンドウ位置、キー割り当て、`:sh` で開くシェル |
+| `%APPDATA%\tabex\config.toml` | 前回のワークスペース、最近使ったワークスペース、表示設定（ナビゲーションツリーの「ワークスペース」の開閉を含む）、ウィンドウ位置、キー割り当て、`:sh` で開くシェル、migemo を使うかどうか |
 | `%APPDATA%\tabex\workspaces\<名前>.toml` | ワークスペース（1 ファイルにつき 1 つ） |
 
 どちらも TOML 形式なので、手で編集したり他の人と共有したりできます。キー割り当ては `config.toml` で変えられます。
 
 ```toml
 shell = 'pwsh.exe -NoLogo'   # :sh で開くシェル（省略時は自動で選ぶ）
+migemo = false               # rustmigemo.dll があっても migemo を使わない（省略時は使う）
 
 [keys]
 "Ctrl+Q" = "NewTab"     # 割り当てを追加する

@@ -57,6 +57,9 @@ pub struct Config {
     /// Command line started by ":sh"; automatic choice when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+    /// Use rustmigemo.dll next to the exe for narrowing when it is there.
+    #[serde(default = "yes")]
+    pub migemo: bool,
     /// Key overrides, e.g. `"Ctrl+Alt+W" = "WorkspaceList"`.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
@@ -136,6 +139,7 @@ mod tests {
         assert!(c.show_extensions);
         assert!(c.nav_tree_visible);
         assert!(c.nav_workspaces_expanded);
+        assert!(c.migemo);
         assert!(!c.show_hidden);
         assert!(!c.show_dotfiles);
         assert!(c.last_workspace.is_none());

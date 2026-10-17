@@ -154,6 +154,22 @@ tabex は Windows 標準エクスプローラの代わりに使うファイル�
   - そのタブで別のフォルダへ移動したとき（戻る / 進む / 上へを含む）は解除する。
   - ワークスペースには保存しない。tabex を起動し直すと、すべてのタブが絞り込みのない状態になる。
 
+##### migemo による絞り込み
+
+[rustmigemo](https://github.com/oguna/rustmigemo) が使える場合は、絞り込みに migemo を使い、ローマ字で入力した文字列で日本語の名前を絞り込めるようにする（例: `kaisha` で「会社案内.pdf」「かいしゃ.txt」「カイシャ.txt」が一致する）。
+
+- 使う条件: tabex.exe と同じフォルダに `rustmigemo.dll` と辞書ファイル `migemo-compact-dict` の両方を置く。どちらも tabex には同梱せず、利用者が用意する（入手先は「使いかた」を参照）。
+  - `rustmigemo.dll` がなければ、これまでどおりの部分一致だけで動く。何も表示しない。
+  - `config.toml` に `migemo = false` と書くと、DLL があっても使わない。既定は `true`。
+- 一致の条件: 「これまでの部分一致（大文字と小文字を区別しない）」**または**「入力した文字列から migemo が作るパターンに一致する」名前を表示する。migemo を使っても、それまで一致していた項目が一致しなくなることはない。
+  - migemo のパターンも、英字の大文字と小文字を区別しない。
+  - 名前の中のどこに一致してもよい（部分一致）。
+  - そのほかの条件（隠しファイル・ドットファイルとの組み合わせ、件数の表示、追加・名前変更への追従、F5、タブごとに持つことなど）は、ここまでの絞り込みと同じ。
+- 表示: migemo を使って絞り込んでいる間は、入力欄の右端の件数の左に `migemo` と表示する（例: `migemo  3 / 42 件`）。
+- 読み込み:
+  - DLL と辞書は、最初に絞り込みを始めたとき（`/` を押したとき）に読み込む。起動時間には影響させない。一度読み込んだら tabex を終了するまで使い続ける。
+  - DLL はあるが、辞書が見つからない・読み込めない、または DLL を読み込めない（形式が違う、必要な関数がないなど）場合は、ステータスバーに「migemo を使えません: (理由)」と表示し、以後は部分一致だけで動く。この表示は tabex を起動している間に 1 度だけ出す。
+
 #### 6.2 コマンド行
 
 vi のコマンド行にならい、`:` に続けてコマンドを入力して実行できる。
@@ -287,6 +303,26 @@ active_tab = 0
 path = 'D:\data'
 view = "details"
 sort = { column = "name", order = "asc" }
+```
+
+### migemo で絞り込む
+
+1. [rustmigemo](https://github.com/oguna/rustmigemo) を `cargo build --features windows-dll --target x86_64-pc-windows-msvc --release` でビルドし、できた `rustmigemo.dll` を tabex.exe と同じフォルダに置く。
+2. [migemo-compact-dict-latest](https://github.com/oguna/migemo-compact-dict-latest) のリリースから `migemo-compact-dict` をダウンロードし、同じフォルダに置く。
+
+```
+C:\tools\tabex\
+  tabex.exe
+  rustmigemo.dll
+  migemo-compact-dict
+```
+
+3. tabex を起動し、ファイル一覧で `/` を押して `kaisha` と入力すると、「会社案内.pdf」「かいしゃ.txt」「カイシャ.txt」などが表示される。入力欄の右端は `migemo  3 / 42 件` のようになる。
+4. migemo を使いたくないときは、`config.toml` に次のように書く。
+
+```toml
+# %APPDATA%\tabex\config.toml
+migemo = false
 ```
 
 ### コマンド行からシェルを開く

@@ -48,6 +48,7 @@ tabex/
 │   │   ├── tabs.rs          # tab open/close/move/duplicate/reopen
 │   │   ├── history.rs       # back/forward
 │   │   ├── listing.rs       # Entry, Listing, sorted index, filter, selection
+│   │   ├── narrow.rs        # narrowing query, migemo pattern parser and matcher
 │   │   ├── layout.rs        # window geometry
 │   │   └── command.rs       # Command enum
 │   ├── store/               # persistence
@@ -69,7 +70,8 @@ tabex/
 │   │   ├── fileop.rs        # IFileOperation + progress sink
 │   │   ├── undo.rs          # undo records, restore from recycle bin
 │   │   ├── clipboard.rs     # data objects and clipboard formats
-│   │   └── dragdrop.rs      # IDropTarget
+│   │   ├── dragdrop.rs      # IDropTarget
+│   │   └── migemo.rs        # optional rustmigemo.dll next to the exe
 │   ├── ui/
 │   │   ├── tabbar.rs        # custom drawn (GDI, double buffered)
 │   │   ├── addressbar.rs    # breadcrumb + Edit with SHAutoComplete
@@ -181,7 +183,7 @@ pub struct Listing {
 - 隠しファイル・システムファイルを表示しない設定は、`order` を作るときに該当項目を除くことで実現する。設定を切り替えても列挙し直す必要はない。
   - 判定には隠し属性を使う。保護された OS ファイル（隠し属性とシステム属性の両方を持つもの）も、この切り替えに従う。システム属性だけを持つファイルは、エクスプローラと同じく常に表示する。
   - ドットファイル（名前の先頭が `.`）は、`Filter::show_dotfiles` で別に判定する。`Filter::accepts` は「隠し属性の判定」と「ドットファイルの判定」の両方を通った項目だけを表示する。名前だけで決まるので、ドライブのルートを含め、追加のファイルアクセスは発生しない。
-- 絞り込み表示（要求仕様 6.1）も `order` を作るときの条件として扱う（7.9）。`Listing` は小文字にした絞り込み文字列 `query: Option<String>` を持ち、`Filter::accepts` と絞り込みの両方を通った項目だけを `order` に入れる。
+- 絞り込み表示（要求仕様 6.1）も `order` を作るときの条件として扱う（7.9）。`Listing` は絞り込みの条件 `query: Option<Rc<Query>>`（7.9.1）を持ち、`Filter::accepts` と絞り込みの両方を通った項目だけを `order` に入れる。
 - 選択状態は `HashSet<u32>`（`entries` の添字）で別に持つ。ソート順が変わったら、ListView 側の選択状態をこの集合から付け直す。
 - 再読み込み（F5、監視のあふれ、表示し直し）では新しい `Listing` を裏で作り、完了したら差し替える。選択状態とフォーカスは名前で引き継ぐ。
 - `Entry::icon` の値 `-2`（`THUMB_ICON`）は「サムネイルを描く」という意味で、ListView には `I_IMAGENONE` として渡す。
@@ -533,7 +535,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
   /// Case-insensitive substring match; `query` must already be lowercase.
   pub fn name_matches(name: &[u16], query: &str) -> bool
   impl Listing {
-      pub fn set_query(&mut self, query: Option<&str>, cmp: Cmp) // lowercases, re-sorts if changed
+      pub fn set_query(&mut self, query: Option<Rc<Query>>, cmp: Cmp) // re-sorts if changed
       pub fn total_len(&self) -> usize // live entries passing `Filter` only (the "m" of "n / m")
   }
   ```
@@ -541,7 +543,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
   - 比較は名前全体（拡張子を含む）を `str::to_lowercase` で小文字にして `contains` で調べる。全角英字も Unicode の規則で大小を区別しない。
   - `append_chunk` / `insert` / `update` / `rename` / `resort` はすべて同じ判定を使う。これで、監視による追加・名前変更にも絞り込みが効き、条件に合わなくなった項目は選択からも外れる。
   - `select_all` は `order` だけを選ぶので、隠れた項目は選ばれない。
-- `start_enum` と列挙失敗時に `Listing` を作るときは、`Tab::narrow` を `set_query` で渡す。F5 で作り直しても絞り込みは保たれる。
+- `start_enum` で `Listing` を作るときは、`Tab::narrow` から作った `Query`（7.9.1 の `App::query_for`）を `with_query` で渡す。列挙失敗時は作りかけの `Listing` の `Query` を引き継ぐ。F5 で作り直しても絞り込みは保たれる。
 - `navigate`（戻る / 進む / 上へを含む）では、移動の前に `Tab::narrow` を `None` にする。
 
 #### 入力欄
@@ -574,6 +576,100 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 - `bind`（タブを表示するとき）で、そのタブの `narrow` に合わせて入力欄を出し入れし、Edit の文字列を入れ替える。このとき `EN_CHANGE` で同じ処理が走らないよう、フラグで抑える。
 - `unbind` では入力欄を隠す。
+
+### 7.9.1 migemo による絞り込み
+
+#### rustmigemo.dll（`shell::migemo`）
+
+rustmigemo の `windows-dll` フィーチャーでビルドした DLL は、次の 3 つの C 関数を公開している（rustmigemo の `src/lib.rs`）。
+
+```rust
+#[repr(C, align(8))]
+struct Desc { dict: *mut c_void, result_ptr: *mut c_char, result_len: u32 }
+type LoadFn = unsafe extern "C" fn(buffer: *const u8, len: u32) -> Desc;      // copies the dictionary
+type QueryFn = unsafe extern "C" fn(m: *mut Desc, buffer: *const u8, len: u32) -> bool; // UTF-8 in, result in result_ptr (NUL terminated, owned by the DLL)
+type DestroyFn = unsafe extern "C" fn(m: *mut Desc);
+```
+
+- 返す文字列は `RegexOperator::Default` の正規表現で、使う記法は「文字」「`\` による 1 文字のエスケープ」「`[...]`（文字クラス、否定や範囲はない）」「`(...)`」「`|`」だけである（量指定子やアンカーはない）。入力を空白や文字種の境目で区切った複数の語は、それぞれのパターンを連結したものになる。
+- tabex のモジュール:
+
+  ```rust
+  pub struct Migemo { lib: HMODULE, desc: Desc, query: QueryFn, destroy: DestroyFn }
+  #[derive(thiserror::Error)]
+  pub enum MigemoError {
+      #[error("{0} を読み込めません: {1}")] Dll(String, String),       // LoadLibraryExW / GetProcAddress
+      #[error("辞書 {0} を読み込めません: {1}")] Dict(String, String), // missing, unreadable, empty, > 4GB
+  }
+  /// Ok(None) when `dir\rustmigemo.dll` does not exist (migemo silently off).
+  pub fn load(dir: &Path) -> Result<Option<Migemo>, MigemoError>
+  impl Migemo {
+      /// Pattern for `text`, None when the DLL reports failure or returns no pattern.
+      pub fn query(&mut self, text: &str) -> Option<String>
+  }
+  impl Drop for Migemo // destroy, then FreeLibrary
+  ```
+
+  - `dir` は `std::env::current_exe()` の親フォルダ。DLL はフルパスを `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` で読み込み、カレントディレクトリや `PATH` からは探さない（DLL の依存先は DLL のあるフォルダと System32 から探す）。
+  - 辞書 `dir\migemo-compact-dict` は `std::fs::read` で読んで `load` に渡す。DLL が中でコピーするので、読んだバッファはすぐ捨てる。
+  - DLL の中でパニックすると（壊れた辞書を渡したときなど）、`extern "C"` の境界でプロセスが異常終了する。tabex 側では防げないため、空の辞書を渡さないことだけを確かめる。
+  - UI スレッドだけで使う（`Send` にしない）。
+
+#### パターンと絞り込みの条件（`model::narrow`、純粋関数）
+
+```rust
+/// Parsed migemo pattern: a tree of alternatives with first-character index.
+pub struct Pattern { .. }
+pub enum PatternError { Unbalanced, TrailingEscape, EmptyClass }
+impl Pattern {
+    pub fn parse(src: &str) -> Result<Pattern, PatternError> // lowercases every literal
+    pub fn is_match(&self, lower_name: &[char]) -> bool      // found anywhere in the name
+}
+
+/// Narrowing condition of one tab, shared by its listing and pending listing.
+pub struct Query { text: String /* lowercase */, pattern: Option<Pattern> }
+impl Query {
+    pub fn new(text: &str, pattern: Option<Pattern>) -> Query
+    pub fn plain(text: &str) -> Query
+    pub fn matches(&self, name: &[u16]) -> bool // substring OR pattern
+    pub fn uses_migemo(&self) -> bool
+}
+impl PartialEq for Query // same text and same pattern presence
+```
+
+- 構文: `alt := seq ('|' seq)*`、`seq := item*`、`item := 文字 | '\' 文字 | '[' (文字 | '\' 文字)+ ']' | '(' alt ')'`。
+- 照合は、名前の各位置から木をたどり、どこかで最後まで一致すれば一致とする（正規表現の検索と同じ）。量指定子がないので、たどる長さは名前の長さで抑えられる。
+  - 1 文字の入力でも、パターンは 1 万文字程度・枝は数千になる（「s」でおよそ 11,000 文字）。枝を 1 本ずつ試すと 10 万件のフォルダで遅くなるため、各 `alt` に「先頭の文字 → 枝の番号」の索引（`HashMap<char, Vec<u32>>`）を持たせ、名前の今の文字で引いた枝と、先頭が文字ではない枝（グループで始まる枝・空の枝）だけを試す。文字クラスで始まる枝は、クラスの各文字で索引に入れる。
+- 大小を区別しない: パターンの文字は解析時に、名前は照合の前に、同じ方法（`char::to_lowercase`、複数文字になる場合は元の文字のまま）で小文字にする。
+- `Query::matches` は名前を一度だけ小文字の `String` にし、`contains(text)` を先に調べ、一致しなければ `Pattern::is_match` を調べる。これで、migemo を使ってもそれまで一致していた項目は必ず一致する。
+- `Listing` の `name_matches` は `Query::plain` の判定として残す。
+
+#### App への組み込み（`app::narrow`）
+
+```rust
+pub enum MigemoState { NotLoaded, Off, Ready(Migemo) }  // App::migemo
+impl App {
+    fn ensure_migemo(&mut self)                                  // first "/" only
+    pub fn query_for(&mut self, text: Option<&str>) -> Option<Rc<Query>>
+    pub fn migemo_active(&self, side: PaneSide) -> bool          // for the filter bar label
+}
+```
+
+- 起動時は `NotLoaded`。`narrow_start` の最初で `ensure_migemo` を呼び、`NotLoaded` のときだけ読み込む。
+  - `config.migemo == false`、または DLL がない（`Ok(None)`）: `Off`。何も表示しない。
+  - `Err(e)`: `Off` にして、ステータスバーに「migemo を使えません: {e}」と表示する。`Off` からは読み込み直さないので、表示は 1 度だけになる。
+  - 成功: `Ready`。
+- `query_for(Some(text))`: `text` が空なら `Query::plain("")`。`Ready` なら `Migemo::query` → `Pattern::parse` で `Query::new(text, pattern)` を作る。パターンが得られない・解析できないときは `pattern = None`（部分一致だけ）とする。
+  - `apply_narrow` と `start_enum` は `query_for(tab.narrow.as_deref())` で作った同じ `Rc<Query>` を `listing` と `pending` で共有する。
+  - 列挙の結果（`on_enum`）はチャンクごとに届くので、そのたびに migemo を呼ばない。列挙失敗時に空の `Listing` を作るときは、作りかけの `Listing` の `Query`（`Listing::query()`）を引き継ぐ。
+  - `Listing::set_query` は `Query` が等しければ並べ直さない。
+- `migemo_active(side)`: `Ready` で、そのペインのタブが絞り込み中（`narrow` が `Some`）、かつコマンド行を開いていないとき `true`。入力が空でも表示する（打てば migemo が効くことが分かるように）。
+- `config.toml` に `migemo: bool`（既定 `true`）を足す。
+
+#### 入力欄の表示（`ui::filterbar`）
+
+- `migemo_active` のとき、件数の領域の左に幅 `MIGEMO_W`（56px、96 DPI 換算）の領域を取り、灰色で `migemo` と描く。Edit はその分だけ狭くする。`geometry` に `migemo: bool` を渡す。
+- 状態が変わったとき（初めての `/` で `Ready` になったとき、タブの切り替え）は、`sync_filter_bar` で Edit を置き直して描き直す。
 
 ### 7.10 コマンド行（`:`）とシェルの起動
 
@@ -679,6 +775,7 @@ pub fn parse(args: impl Iterator<Item = OsString>) -> Result<CliAction, CliError
 
 - 起動処理の順番: 引数の解析 → 単一インスタンスの確認 → `OleInitialize` → 設定とワークスペースの読み込み → ウィンドウの作成 → `ShowWindow` → アクティブな 2 タブの列挙開始
 - ナビゲーションツリー、アイコンの本取得、アクティブでないタブの準備は、ウィンドウを表示したあと最初のアイドル時まで遅らせる。
+- `rustmigemo.dll` と辞書（約 2MB）は起動時には読まず、最初に `/` を押したときに読み込む（7.9.1）。
 - 起動時間の計測: 環境変数 `TABEX_TRACE=1` を設定すると、起動の各段階にかかった時間を `%LOCALAPPDATA%\tabex\trace.log` に書き出す。あわせて、実行したコマンドも記録する。
 - 計測結果（S11）: 起動から操作可能になるまで約 110〜130ms（ディスクキャッシュが温まっている状態）。ビルド直後の初回起動では約 350ms だった。待機時のワーキングセットは、10 万件のフォルダを表示した状態で 45.6MB。exe のサイズは 1.0MB。
 
@@ -692,6 +789,7 @@ pub fn parse(args: impl Iterator<Item = OsString>) -> Result<CliAction, CliError
 | `StoreError::{Io, Parse, UnsupportedVersion, InvalidName}` | 設定やワークスペースの読み書き | 読み込みの失敗はメッセージボックスで知らせ、起動は続ける。書き込みの失敗はステータスバーに表示し、次の自動保存で再試行する。名前が不正な場合はダイアログ内に表示する |
 | `FsError::{NotFound, AccessDenied, Other}` | フォルダの列挙・監視 | タブの中に表示し、「再試行」と「親フォルダへ」のボタンを出す |
 | `ShellError` | 右クリックメニュー・クリップボード・D&D | ステータスバーに表示する |
+| `MigemoError::{Dll, Dict}` | `rustmigemo.dll` と辞書の読み込み（7.9.1） | 最初の `/` のときに 1 度だけステータスバーに表示し、以後は部分一致だけで動く。パターンを解析できない `PatternError` は表示せず、その入力では部分一致だけを使う |
 | ファイル操作の失敗 | `IFileOperation` | エラー表示はシェルのダイアログに任せ、tabex 側では表示しない |
 
 - パニックしたときは `panic::set_hook` で `%LOCALAPPDATA%\tabex\crash.log` にメッセージとバックトレースを書き出し、メッセージボックスで知らせてから終了する。リリースビルドでは `panic = "abort"` とする。
@@ -726,6 +824,7 @@ strip = true
 ```
 
 - 依存するクレートは、上記の 5 つ（`windows`、`windows-core`、`serde`、`toml`、`thiserror`）とビルド用の `embed-resource` に限る。新しく追加する場合は、起動時間と exe サイズへの影響を確かめてからにする。
+- `rustmigemo.dll` はリンクせず、実行時に `LoadLibraryExW` で読み込む（7.9.1）。DLL と辞書は配布物に含めない。
 - ランタイム DLL がなくても動く単一 exe にするため、`.cargo/config.toml` で `x86_64-pc-windows-msvc` に `-C target-feature=+crt-static` を指定する。
 - バージョン番号は `Cargo.toml` だけで管理する。
   - `--version` の表示には `env!("CARGO_PKG_VERSION")` を使う。
@@ -742,9 +841,10 @@ strip = true
 | `model::tabs` | タブを開く・閉じる・移動・複製したとき、`active_tab` が正しく付け替わること。最後の 1 タブを閉じたときの動き。ペインをまたぐ移動。閉じたタブの再オープン（上限の 20 件を超えたとき） |
 | `model::history` | 戻る・進むの動き。新しく移動したら進む用の履歴が消えること。上限の 100 件 |
 | `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき。絞り込み（`name_matches` の大小無視・拡張子を含むこと・日本語、`set_query` での絞り込みと解除、隠しファイル設定との組み合わせ、追加・名前変更・削除への追従、隠れた項目が選択から外れること、`total_len`） |
+| `model::narrow` | `Pattern::parse`: 文字・エスケープ・文字クラス（中のエスケープを含む）・入れ子のグループ・連結したグループ、閉じていない括弧や末尾の `\` がエラーになること。`is_match`: 名前の途中での一致、大小無視、`kaisha` の実際のパターンで「会社案内.pdf」「かいしゃ」「カイシャ」に一致し「会議」に一致しないこと、先頭の文字の索引で枝を取りこぼさないこと（同じ先頭文字の枝が複数・クラスで始まる枝・グループで始まる枝）。`Query::matches`: パターンがあっても部分一致の項目が一致すること、パターンなしのとき部分一致だけになること、`PartialEq` |
 | `model::layout` | 絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
-| `store::config` | 既定値（`nav_workspaces_expanded` が `true` になることを含む）、往復、最近使った一覧、知らない version |
+| `store::config` | 既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
 | `store::autosave` | 時刻を差し替えて、1 秒間変更がなかったときだけ保存すること。すぐ保存すべき場面（切替時など）で保存すること |
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
@@ -778,4 +878,4 @@ strip = true
 
 ### 11.4 手動確認
 
-GUI の見た目と操作、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。
+GUI の見た目と操作、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）、`rustmigemo.dll` の読み込み（DLL と辞書は配布物にもリポジトリにも含めないため）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。

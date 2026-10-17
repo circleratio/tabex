@@ -261,7 +261,8 @@ impl App {
         let Some(tab) = self.tab(id) else { return };
         let location = tab.location.clone();
         let sort = tab.view.sort;
-        let query = tab.narrow.clone();
+        let narrow = tab.narrow.clone();
+        let query = self.query_for(narrow.as_deref());
         let generation = self.next_generation;
         self.next_generation += 1;
         let filter = self.filter();
@@ -271,7 +272,7 @@ impl App {
         rt.cancel.store(true, Ordering::Relaxed);
         rt.cancel = cancel.clone();
         rt.generation = generation;
-        let fresh = || Listing::new(generation, filter).with_query(query.as_deref());
+        let fresh = || Listing::new(generation, filter).with_query(query.clone());
         if keep_old && rt.listing.is_some() {
             rt.pending = Some(fresh());
         } else {
@@ -305,7 +306,6 @@ impl App {
     pub fn on_enum(&mut self, id: TabId, generation: u64, event: EnumEvent) {
         let Some(tab) = self.tab(id) else { return };
         let cmp = crate::fs::sort::comparator(tab.view.sort);
-        let query = tab.narrow.clone();
         let shown = self.shown_side(id);
         let filter = self.filter();
         let Some(rt) = self.rt.get_mut(&id) else { return };
@@ -363,7 +363,9 @@ impl App {
             }
             EnumEvent::Failed(e) => {
                 rt.pending = None;
-                let mut empty = Listing::new(generation, filter).with_query(query.as_deref());
+                // Keep the condition the listing was started with (no migemo query per event).
+                let query = rt.pending.as_ref().or(rt.listing.as_ref()).and_then(Listing::query);
+                let mut empty = Listing::new(generation, filter).with_query(query);
                 empty.complete = true;
                 rt.listing = Some(empty);
                 if let Some(t) = self.ws.tab_mut(id) {

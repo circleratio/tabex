@@ -3,6 +3,9 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::ops::RangeInclusive;
+use std::rc::Rc;
+
+use super::narrow::Query;
 
 pub const ATTR_READONLY: u32 = 0x1;
 pub const ATTR_HIDDEN: u32 = 0x2;
@@ -80,9 +83,9 @@ pub fn name_matches(name: &[u16], query: &str) -> bool {
     query.is_empty() || String::from_utf16_lossy(name).to_lowercase().contains(query)
 }
 
-/// Shown in the view: passes the hidden / dot-file filter and the narrowing text.
-fn visible(filter: Filter, query: Option<&str>, e: &Entry) -> bool {
-    filter.accepts(e) && query.is_none_or(|q| name_matches(&e.name, q))
+/// Shown in the view: passes the hidden / dot-file filter and the narrowing condition.
+fn visible(filter: Filter, query: Option<&Query>, e: &Entry) -> bool {
+    filter.accepts(e) && query.is_none_or(|q| q.matches(&e.name))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,8 +111,8 @@ pub struct Listing {
     entries: Vec<Entry>,
     order: Vec<u32>,
     filter: Filter,
-    /// Lowercase narrowing text (requirement 6.1).
-    query: Option<String>,
+    /// Narrowing condition (requirement 6.1), shared with the tab's other listing.
+    query: Option<Rc<Query>>,
     selection: HashSet<u32>,
     dead: usize,
 }
@@ -124,9 +127,13 @@ impl Listing {
     }
 
     /// Start with a narrowing text (for a listing that is still empty).
-    pub fn with_query(mut self, query: Option<&str>) -> Self {
-        self.query = query.map(str::to_lowercase);
+    pub fn with_query(mut self, query: Option<Rc<Query>>) -> Self {
+        self.query = query;
         self
+    }
+
+    pub fn query(&self) -> Option<Rc<Query>> {
+        self.query.clone()
     }
 
     pub fn len(&self) -> usize {
@@ -229,9 +236,8 @@ impl Listing {
         }
     }
 
-    /// Narrow the view to names containing `query` (case-insensitive); `None` shows all.
-    pub fn set_query(&mut self, query: Option<&str>, cmp: Cmp) {
-        let query = query.map(str::to_lowercase);
+    /// Narrow the view to names matching `query`; `None` shows all.
+    pub fn set_query(&mut self, query: Option<Rc<Query>>, cmp: Cmp) {
         if self.query != query {
             self.query = query;
             self.resort(cmp);
@@ -788,16 +794,20 @@ pub(crate) mod tests {
         assert!(!name_matches(&w("apple.dat"), "pear"));
     }
 
+    fn q(text: &str) -> Option<Rc<Query>> {
+        Some(Rc::new(Query::plain(text)))
+    }
+
     #[test]
     fn narrowing_view() {
         let mut l = Listing::new(1, Filter::default());
         let names_in = ["f1.txt", "f10.txt", "f2.txt", "apple.dat", "Banana.DAT", ".f1rc"];
         l.append_chunk(names_in.iter().map(|n| f(n)).collect(), &by_name);
         assert_eq!(l.len(), 5); // dot file hidden by the filter
-        l.set_query(Some("F1"), &by_name);
+        l.set_query(q("F1"), &by_name);
         assert_eq!(names(&l), ["f1.txt", "f10.txt"]);
         assert_eq!(l.total_len(), 5);
-        l.set_query(Some("dat"), &by_name);
+        l.set_query(q("dat"), &by_name);
         assert_eq!(names(&l), ["apple.dat", "Banana.DAT"]);
         // Showing dot files only adds names that also match the text.
         l.set_filter(
@@ -807,7 +817,7 @@ pub(crate) mod tests {
             },
             &by_name,
         );
-        l.set_query(Some("f1"), &by_name);
+        l.set_query(q("f1"), &by_name);
         assert_eq!(names(&l), [".f1rc", "f1.txt", "f10.txt"]);
         assert_eq!(l.total_len(), 6);
         l.set_query(None, &by_name);
@@ -819,7 +829,7 @@ pub(crate) mod tests {
         let mut l = Listing::new(1, Filter::default());
         l.append_chunk(vec![f("f1.txt"), f("f2.txt"), f("g1.txt")], &by_name);
         l.select_all();
-        l.set_query(Some("f"), &by_name);
+        l.set_query(q("f"), &by_name);
         // g1 is no longer visible, so it cannot stay selected.
         assert_eq!(l.selection_count(), 2);
         l.select_all();

@@ -1,12 +1,62 @@
 //! Narrowing the file list to names containing a text (requirement 6.1).
 
+use std::rc::Rc;
+
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 
 use super::*;
+use crate::model::narrow::{Pattern, Query};
+use crate::shell::migemo::Migemo;
 use crate::ui::filterbar;
 
+pub enum MigemoState {
+    NotLoaded,
+    /// Disabled, no DLL, or loading failed (reported once).
+    Off,
+    Ready(Migemo),
+}
+
 impl App {
+    /// Load rustmigemo.dll the first time narrowing starts.
+    fn ensure_migemo(&mut self) {
+        if !matches!(self.migemo, MigemoState::NotLoaded) {
+            return;
+        }
+        self.migemo = MigemoState::Off;
+        if !self.config.migemo {
+            return;
+        }
+        let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        else {
+            return;
+        };
+        match crate::shell::migemo::load(&dir) {
+            Ok(Some(m)) => self.migemo = MigemoState::Ready(m),
+            Ok(None) => {}
+            Err(e) => self.show_status(&format!("migemo を使えません: {e}")),
+        }
+    }
+
+    /// Narrowing condition for `text`, with a migemo pattern when the DLL is loaded.
+    pub fn query_for(&mut self, text: Option<&str>) -> Option<Rc<Query>> {
+        let text = text?;
+        let pattern = match &mut self.migemo {
+            MigemoState::Ready(m) if !text.is_empty() => m.query(text).and_then(|p| Pattern::parse(&p).ok()),
+            _ => None,
+        };
+        Some(Rc::new(Query::new(text, pattern)))
+    }
+
+    /// Whether the filter bar of `side` shows the "migemo" label.
+    pub fn migemo_active(&self, side: PaneSide) -> bool {
+        matches!(self.migemo, MigemoState::Ready(_))
+            && !self.command_line[side.index()]
+            && self.narrow_of(side).is_some()
+    }
+
     /// Narrowing text of the tab shown in `side`; `Some("")` while the input is open but empty.
     pub fn narrow_of(&self, side: PaneSide) -> Option<&str> {
         let id = self.panes[side.index()].shown?;
@@ -51,6 +101,8 @@ impl App {
         if was_visible != visible {
             self.layout();
         }
+        // The "migemo" label narrows the edit; it changes with the tab and the bar mode.
+        filterbar::layout(bar, edit, self.dpi, self.font, self.migemo_active(side));
         self.invalidate_filter_bar(side);
     }
 
@@ -125,11 +177,13 @@ impl App {
             return;
         };
         let Some(tab) = self.tab(id) else { return };
-        let cmp = crate::fs::sort::comparator(tab.view.sort);
-        let query = tab.narrow.clone();
+        let sort = tab.view.sort;
+        let narrow = tab.narrow.clone();
+        let query = self.query_for(narrow.as_deref());
+        let cmp = crate::fs::sort::comparator(sort);
         if let Some(rt) = self.rt.get_mut(&id) {
             for l in rt.listing.iter_mut().chain(rt.pending.iter_mut()) {
-                l.set_query(query.as_deref(), &cmp);
+                l.set_query(query.clone(), &cmp);
             }
         }
         self.after_listing_change(id, true);
@@ -140,6 +194,7 @@ impl App {
         let Some(id) = self.panes[side.index()].shown else {
             return;
         };
+        self.ensure_migemo();
         let Some(tab) = self.ws.tab_mut(id) else { return };
         tab.narrow.get_or_insert_with(String::new);
         self.sync_filter_bar(side);

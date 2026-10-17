@@ -546,3 +546,55 @@ start target\release\tabex.exe
 
 **完了条件**
 - `cargo test`・`cargo clippy --all-targets -- -D warnings` が通り、上の 1〜7 がすべて期待どおりになる。
+
+---
+
+# 追加機能: migemo による絞り込み
+
+要求仕様 §6.1（migemo による絞り込み）、設計 §7.9.1 の実装手順。M1 と M2 は並行して進められる。M3 は両方が終わってから、M4 は M3 のあとに行う。
+
+## M1. model: パターンと絞り込みの条件
+
+**やること**
+- `model::narrow` に `Pattern`（解析と照合）と `Query` を作る。
+- `Listing` の絞り込みを `Option<Rc<Query>>` に置き換え、`with_query` / `set_query` の引数を変える。既存のテストは `Query::plain` で書き直す。
+- `Config` に `migemo: bool`（既定 `true`）を足す。
+- 設計 §11.1 の観点で単体テストを書く。`kaisha` のテストには、rustmigemo が実際に返したパターンを文字列として埋め込む（DLL はテストで使わない）。
+
+**完了条件**
+- `cargo test` で、追加したテストを含めて全件成功する。
+
+## M2. shell: DLL の読み込み
+
+**やること**
+- `shell::migemo` に `load` / `Migemo::query` / `Drop` を作る。
+
+**完了条件**
+- `cargo build` が通る。手元でビルドした `rustmigemo.dll` と辞書を置いたフォルダを指定して `load` → `query("kaisha")` が `会社` を含むパターンを返すことを、一時的な確認コード（コミットしない）で確かめる。
+
+## M3. App と入力欄への組み込み
+
+**やること**
+- `App::migemo`・`ensure_migemo`・`query_for`・`migemo_active` を作り、`narrow_start`・`apply_narrow`・`start_enum`・列挙失敗時の処理を `query_for` に切り替える。
+- `ui::filterbar` に `migemo` の表示を足す。
+
+**完了条件**
+- `cargo build --release` が通り、`cargo clippy --all-targets -- -D warnings` の警告がない。
+
+## M4. 手動動作確認と仕上げ
+
+`TABEX_HOME` を一時フォルダに向け、**起動する呼び出しの中で毎回設定して** 確認する。`target\release` に、rustmigemo を `--features windows-dll` でビルドした `rustmigemo.dll` と `migemo-compact-dict` を置く。テスト用フォルダに `会社案内.pdf`、`かいしゃ.txt`、`カイシャ.txt`、`会議.txt`、`kaisha.log`、`KAISHA.md`、`東京タワー.jpg`、`f1.txt`〜`f20.txt` を作る。
+
+1. `/` を押すと入力欄の右端に `migemo  0 / 0 件` 形式で `migemo` が表示される（入力が空の段階で表示される）。
+2. `kaisha` と打つと、`会社案内.pdf`・`かいしゃ.txt`・`カイシャ.txt`・`kaisha.log`・`KAISHA.md` の 5 件が表示され、`会議.txt` は表示されない。
+3. `f1` と打つと、これまでどおり `f1.txt`・`f10.txt`〜`f19.txt` の 11 件になる（migemo を使っても部分一致の結果が減らない）。
+4. `toukyou` で `東京タワー.jpg` が出る。`タワー` のように日本語で直接打っても、これまでどおり一致する。
+5. 確定（Enter）・解除（Esc）・タブ切り替え・F5・フォルダ移動のふるまいが、migemo なしのときと変わらない。
+6. `config.toml` に `migemo = false` を書いて起動し直すと、`migemo` の表示が出ず、`kaisha` では `kaisha.log` と `KAISHA.md` だけになる。
+7. `migemo-compact-dict` を退避して起動し直し、`/` を押すと、ステータスバーに「migemo を使えません: 辞書 … を読み込めません: …」が出て、部分一致だけで動く。もう一度 `/` を押しても表示は出ない。
+8. `rustmigemo.dll` も退避すると、何も表示されず部分一致だけで動く。
+9. 起動時間が変わらないこと（`TABEX_TRACE=1` で比べる）、`/` を初めて押したときに目立つ待ちがないことを確かめる。
+- `README.md` に migemo の使いかたを書き足す。作業用の一時フォルダと、`target\release` に置いた DLL・辞書を削除する。
+
+**完了条件**
+- `cargo test`・`cargo clippy --all-targets -- -D warnings` が通り、上の 1〜9 がすべて期待どおりになる。

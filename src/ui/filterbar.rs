@@ -17,6 +17,8 @@ const SUBCLASS_ID: usize = 1;
 /// Width of the "/" prompt and of the count area, 96-DPI pixels.
 const PROMPT_W: i32 = 18;
 const COUNT_W: i32 = 120;
+/// Width of the "migemo" label left of the count.
+const MIGEMO_W: i32 = 56;
 
 pub fn register(instance: HINSTANCE, cursor: HCURSOR) -> Result<()> {
     let wc = WNDCLASSW {
@@ -109,18 +111,26 @@ struct Geometry {
     prompt: Rect,
     edit: Rect,
     count: Rect,
+    migemo: Option<Rect>,
 }
 
-fn geometry(hwnd: HWND, dpi: u32, font_h: i32) -> Geometry {
+fn geometry(hwnd: HWND, dpi: u32, font_h: i32, migemo: bool) -> Geometry {
     let c = super::client_rect(hwnd);
     let s = |v| scale(v, dpi);
     // Leave a 1px separator line at the top.
     let top = c.top + 1;
     let prompt = Rect::new(c.left + s(4), top, c.left + s(4) + s(PROMPT_W), c.bottom);
     let count = Rect::new((c.right - s(COUNT_W)).max(prompt.right), top, c.right - s(6), c.bottom);
+    let migemo = migemo.then(|| Rect::new((count.left - s(MIGEMO_W)).max(prompt.right), top, count.left, c.bottom));
+    let edit_right = migemo.map_or(count.left, |m| m.left) - s(4);
     let edit_top = top + ((c.bottom - top) - font_h).max(0) / 2;
-    let edit = Rect::new(prompt.right, edit_top, count.left - s(4), edit_top + font_h);
-    Geometry { prompt, edit, count }
+    let edit = Rect::new(prompt.right, edit_top, edit_right, edit_top + font_h);
+    Geometry {
+        prompt,
+        edit,
+        count,
+        migemo,
+    }
 }
 
 fn font_height(hwnd: HWND, font: HFONT) -> i32 {
@@ -135,9 +145,10 @@ fn font_height(hwnd: HWND, font: HFONT) -> i32 {
     }
 }
 
-/// Position the edit control inside the bar (call after the bar is resized or the font changes).
-pub fn layout(bar: HWND, edit: HWND, dpi: u32, font: HFONT) {
-    let g = geometry(bar, dpi, font_height(bar, font));
+/// Position the edit control inside the bar (call after the bar is resized, the font changes
+/// or the "migemo" label appears or disappears).
+pub fn layout(bar: HWND, edit: HWND, dpi: u32, font: HFONT, migemo: bool) {
+    let g = geometry(bar, dpi, font_height(bar, font), migemo);
     super::place(edit, g.edit, true);
 }
 
@@ -156,7 +167,7 @@ fn paint(hwnd: HWND, app: &App, side: PaneSide) {
         let old = SelectObject(hdc, app.font.into());
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
-        let g = geometry(hwnd, app.dpi, font_height(hwnd, app.font));
+        let g = geometry(hwnd, app.dpi, font_height(hwnd, app.font), app.migemo_active(side));
         let mut prompt = super::to_win(g.prompt);
         let command = app.command_line[side.index()];
         let mut mark: Vec<u16> = if command { ":" } else { "/" }.encode_utf16().collect();
@@ -166,6 +177,12 @@ fn paint(hwnd: HWND, app: &App, side: PaneSide) {
             let mut s: Vec<u16> = format!("{n} / {m} 件").encode_utf16().collect();
             SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
             DrawTextW(hdc, &mut s, &mut count, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+        }
+        if let Some(m) = g.migemo {
+            let mut r = super::to_win(m);
+            let mut s: Vec<u16> = "migemo".encode_utf16().collect();
+            SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
+            DrawTextW(hdc, &mut s, &mut r, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
         }
         SelectObject(hdc, old);
         let _ = EndPaint(hwnd, &ps);
@@ -185,7 +202,8 @@ extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
             }
             WM_ERASEBKGND => LRESULT(1),
             WM_SIZE => {
-                layout(hwnd, app.panes[side.index()].filter_edit, app.dpi, app.font);
+                let migemo = app.migemo_active(side);
+                layout(hwnd, app.panes[side.index()].filter_edit, app.dpi, app.font, migemo);
                 LRESULT(0)
             }
             WM_COMMAND => {

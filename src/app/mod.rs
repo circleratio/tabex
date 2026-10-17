@@ -156,6 +156,8 @@ pub struct App {
     pub narrow_syncing: bool,
     /// ":" command line open under the list, indexed by `PaneSide::index()`.
     pub command_line: [bool; 2],
+    /// rustmigemo.dll for narrowing, loaded on the first "/".
+    pub migemo: narrow::MigemoState,
     pub split_drag: Option<SplitDrag>,
     pub tab_drag: Option<TabDrag>,
     pub menu: menu::MenuState,
@@ -373,6 +375,7 @@ impl App {
             next_generation: 1,
             suppress_selection: false,
             narrow_syncing: false,
+            migemo: narrow::MigemoState::NotLoaded,
             command_line: [false; 2],
             split_drag: None,
             tab_drag: None,
