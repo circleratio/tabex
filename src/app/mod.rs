@@ -154,6 +154,8 @@ pub struct App {
     pub suppress_selection: bool,
     /// Set while the filter bar text is replaced programmatically (ignore EN_CHANGE).
     pub narrow_syncing: bool,
+    /// ":" command line open under the list, indexed by `PaneSide::index()`.
+    pub command_line: [bool; 2],
     pub split_drag: Option<SplitDrag>,
     pub tab_drag: Option<TabDrag>,
     pub menu: menu::MenuState,
@@ -371,6 +373,7 @@ impl App {
             next_generation: 1,
             suppress_selection: false,
             narrow_syncing: false,
+            command_line: [false; 2],
             split_drag: None,
             tab_drag: None,
             menu: menu::MenuState::default(),
@@ -421,7 +424,7 @@ impl App {
             active_pane: self.ws.active_pane,
             nav_visible: self.config.nav_tree_visible,
             nav_width: self.config.nav_width,
-            filter_bar: PaneSide::BOTH.map(|side| self.narrow_of(side).is_some()),
+            filter_bar: PaneSide::BOTH.map(|side| self.filter_bar_visible(side)),
         }
     }
 
@@ -635,6 +638,20 @@ impl App {
                 if let Some(side) = self.pane_of_hwnd(focus) {
                     self.set_active_pane(side);
                 }
+                self.execute(cmd);
+                true
+            }
+            WM_CHAR => {
+                // Character bindings (":") act only in the file list, so typing elsewhere is untouched.
+                let focus = unsafe { GetFocus() };
+                let Some(side) = self.side_of_list(focus) else {
+                    return false;
+                };
+                let Some(cmd) = char::from_u32(msg.wParam.0 as u32).and_then(|c| self.keymap.lookup_char(c).cloned())
+                else {
+                    return false;
+                };
+                self.set_active_pane(side);
                 self.execute(cmd);
                 true
             }

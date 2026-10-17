@@ -1,5 +1,6 @@
 //! Platform independent application state. Nothing in this module calls Win32.
 
+pub mod cmdline;
 pub mod command;
 pub mod history;
 pub mod layout;

@@ -165,6 +165,7 @@ impl App {
             ExtendSelectionUp => self.cursor_step(side, -1, true),
             NarrowStart => self.narrow_start(side),
             NarrowClear => self.clear_narrow(side),
+            CommandLine => self.command_line_open(side),
             SetViewMode(mode) => {
                 self.capture_view(side);
                 let tab = self.ws.active_tab_mut();

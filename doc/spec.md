@@ -244,6 +244,7 @@ show_dotfiles = false                  # dot files are hidden by default
 show_extensions = true
 nav_tree_visible = true
 nav_workspaces_expanded = true         # "ワークスペース" node in the navigation tree
+shell = 'pwsh.exe -NoLogo'             # optional: command line started by ":sh"
 window = { x = 100, y = 100, width = 1400, height = 900, maximized = false }
 
 [keys]                                  # optional overrides, "Ctrl+Alt+W" = "WorkspaceList"
@@ -465,6 +466,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 - キーと `Command` の対応表を持つ。既定の表は下記のとおりで、`config.toml` の `[keys]` に書いた内容で上書きできる。
 - 割り当てのない Alt+英字キーは、`WM_SYSCOMMAND(SC_KEYMENU)` としてメインウィンドウに送る。こうすると、フォーカスがどのコントロールにあってもメニューバーが開く。
 - キー入力はメッセージループの `TranslateAcceleratorW` より前で判定する。ただし Edit コントロール（リネーム中やアドレス入力中）にフォーカスがあるときは、文字の入力・編集に使うキー（Backspace など）を横取りしない。
+  - Ctrl+U / Ctrl+B（既定では `Up`）も `is_edit_key` に含め、Edit にフォーカスがあるときは割り当てを引かない。標準の Edit はこの 2 つで何もしないので、入力中は「何もしない」になる（要求仕様 §9）。ツリーやタブバーなど Edit 以外では、Alt+↑ と同じく効く。
 
 | キー | Command | キー | Command |
 |---|---|---|---|
@@ -483,6 +485,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 | J / K | CursorDown / CursorUp | Shift+J / Shift+K | ExtendSelectionDown / ExtendSelectionUp |
 | H / L | PrevTab / NextTab | | |
 | / | NarrowStart | Esc（一覧） | NarrowClear |
+| Ctrl+U / Ctrl+B | Up | | |
 
 #### 7.7.1 vi 風のカーソル移動（hjkl）
 
@@ -571,6 +574,68 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 - `bind`（タブを表示するとき）で、そのタブの `narrow` に合わせて入力欄を出し入れし、Edit の文字列を入れ替える。このとき `EN_CHANGE` で同じ処理が走らないよう、フラグで抑える。
 - `unbind` では入力欄を隠す。
+
+### 7.10 コマンド行（`:`）とシェルの起動
+
+#### キー
+
+- `:` は配列によって仮想キーが違う（US 配列は Shift+`VK_OEM_1`、日本語配列は `VK_OEM_1` 単独で、日本語配列の Shift+`VK_OEM_1` は `*`）。そのため仮想キーではなく、`WM_CHAR` の文字で判定する。
+- `KeyMap` に文字の割り当て `chars: Vec<(char, Command)>` を足す。既定は `(':', Command::CommandLine)`。
+  - `config.toml` の `[keys]` では、`parse_key` で解釈できない 1 文字（英数字以外の記号）を文字の割り当てとして扱う（例: `":" = "CommandLine"`、`":" = "None"`）。`/` はこれまでどおり仮想キーとして扱う。
+  - `KeyMap::lookup_char(c: char) -> Option<&Command>` で引く。
+- `pre_translate` で `WM_CHAR` を見る。フォーカスがファイル一覧にあるときだけ文字の割り当てを引き、当たれば実行してメッセージを消費する（ListView の頭文字ジャンプに渡さない）。一覧以外（Edit やツリー）では何もしない。
+
+#### 入力欄
+
+- 絞り込みの入力欄（7.9 の `TabexFilterBar`）をそのまま使い、ペインごとに「モード」を持たせる: `BarMode::Narrow` / `BarMode::Command`。`App` に `command_line: [bool; 2]` を持つ。
+  - 入力欄を出す条件は「`narrow` が `Some` または `command_line` が `true`」。`LayoutState::filter_bar` もこの条件で決める。
+  - Command モードでは、左端に「:」を描き、件数は描かない。
+- 開く（`Command::CommandLine`、名前 `CommandLine`）: `command_line[side] = true`、Edit を空にして（`narrow_syncing` で `EN_CHANGE` を抑える）フォーカスを移す。
+- Command モードでの Edit のキー:
+
+| キー | 処理 |
+|---|---|
+| 文字の入力（`EN_CHANGE`） | 何もしない（絞り込みには使わない） |
+| Enter | 文字列を取り出して閉じ、`execute_command_line` で実行する |
+| Esc / Backspace（空のとき） | 何もせずに閉じる |
+| ↑ / ↓ | 何もしない |
+
+- 閉じる: `command_line[side] = false` にして `sync_filter_bar(side)` を呼ぶ。絞り込み中なら Narrow モードの表示（文字列と件数）に戻り、そうでなければ入力欄が消える。フォーカスは一覧に戻す。
+- タブを切り替えたとき（`bind` / `unbind`）は、開いていたコマンド行を閉じる。
+
+#### コマンドの解釈（`model::cmdline`、純粋関数）
+
+```rust
+pub enum CmdLine { Shell }
+/// Ok(None) for an empty line; Err(text) for an unknown command.
+pub fn parse(s: &str) -> Result<Option<CmdLine>, String>
+```
+
+- 前後の空白を除いてから比べる。`sh` だけを受け付け、大文字小文字は区別する（vi と同じ）。
+- `Err` のときはステータスバーに「不明なコマンドです: (文字列)」を出す。
+
+#### シェルの起動（`shell::terminal`）
+
+```rust
+pub enum ShellKind { WindowsTerminal, Pwsh, PowerShell, Cmd, Custom(String) }
+pub fn choose(config: Option<&str>, find: impl Fn(&str) -> bool) -> ShellKind  // pure
+pub fn command_line(kind: &ShellKind, dir: &str) -> String                   // pure
+pub fn is_cmd(kind: &ShellKind) -> bool                                      // pure
+pub fn launch(kind: &ShellKind, dir: &str) -> Result<(), String>
+```
+
+- `choose`: `config.toml` の `shell` があれば `Custom`。なければ `wt.exe` → `pwsh.exe` → `powershell.exe` → `cmd.exe` の順に、`find`（実際には `SearchPathW` で PATH を探す）で見つかった最初のもの。どれも見つからなければ `Cmd`。
+- `command_line`:
+  - Windows Terminal は、プロファイルの開始フォルダよりもカレントディレクトリを優先させるため `wt.exe -d "<dir>"` とする。`dir` が `\` で終わる（ドライブのルート）ときは、閉じ引用符がエスケープされないよう末尾に `.` を足す（`"C:\."`）。
+  - それ以外は実行ファイル名（`Custom` は書かれたとおり）だけを使い、フォルダは `CreateProcessW` の `lpCurrentDirectory` で渡す。
+- `is_cmd`: `Cmd`、または `Custom` の先頭のトークンのファイル名が `cmd.exe` / `cmd` のとき `true`。
+- `launch`: `CreateProcessW`（`CREATE_NEW_CONSOLE`、`lpCurrentDirectory = dir`）で起動し、プロセスとスレッドのハンドルはすぐ閉じる。待たない。失敗したら OS のエラーメッセージを返す。
+- 実行（`App::open_shell(side)`）の確認順:
+  1. タブの `status` が `NotFound` / `Error` なら「フォルダが見つかりません」。
+  2. `Location::is_file_system()` が偽なら「このフォルダではシェルを開けません」。
+  3. UNC パス（`\\` で始まる）で `is_cmd` なら「コマンドプロンプトは UNC パスのフォルダでは開けません」。
+  4. `launch` が失敗したら「シェルを起動できませんでした: (エラー)」。
+  - どれもステータスバー（`show_status`）に出す。
 
 ## 8. 起動、単一インスタンス、コマンドライン
 
@@ -685,7 +750,9 @@ strip = true
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
 | `fs::sort` | 自然順（`file2` が `file10` より前）、フォルダが先に来ること、昇順・降順、値が同じときの並び |
 | `model::workspace` | 親フォルダの求め方（ドライブのルート、UNC）、パンくずの分割、タブタイトル |
-| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析 |
+| `model::cmdline` | `sh`、前後の空白、空行、知らないコマンド、大文字の `SH` |
+| `shell::terminal` | `choose` の優先順位（見つかるものを差し替える）と設定の優先、`command_line` の引用符とドライブのルート、`is_cmd` |
+| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
 | `shell::dragdrop` | ドロップ効果の決定（Ctrl・Shift、同じドライブかどうか、UNC、許可されていない効果） |

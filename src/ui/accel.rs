@@ -129,6 +129,8 @@ pub fn default_bindings() -> Vec<(&'static str, Command)> {
         ("L", NextTab),
         ("/", NarrowStart),
         ("Esc", NarrowClear),
+        ("Ctrl+U", Up),
+        ("Ctrl+B", Up),
     ];
     const DIGITS: [&str; 9] = [
         "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9",
@@ -177,13 +179,41 @@ pub fn is_edit_key(k: &KeySpec) -> bool {
         && !k.alt
         && matches!(
             k.vk,
-            0x41 | 0x43 | 0x56 | 0x58 | 0x59 | 0x5A | VK_LEFT | VK_RIGHT | VK_BACK | VK_DELETE | VK_HOME | VK_END
+            // A, B, C, U, V, X, Y, Z: B / U are kept so Ctrl+B / Ctrl+U (Up) do nothing while typing.
+            0x41 | 0x42
+                | 0x43
+                | 0x55
+                | 0x56
+                | 0x58
+                | 0x59
+                | 0x5A
+                | VK_LEFT
+                | VK_RIGHT
+                | VK_BACK
+                | VK_DELETE
+                | VK_HOME
+                | VK_END
         )
 }
 
 #[derive(Debug, Default)]
 pub struct KeyMap {
     bindings: Vec<(KeySpec, Command)>,
+    /// Bindings by typed character (WM_CHAR), for keys whose position differs between
+    /// keyboard layouts such as ":".
+    chars: Vec<(char, Command)>,
+}
+
+/// Default character bindings; they only act while the file list has focus.
+pub fn default_char_bindings() -> Vec<(char, Command)> {
+    vec![(':', Command::CommandLine)]
+}
+
+/// A single punctuation character that is bound by character rather than by key.
+fn parse_char(s: &str) -> Option<char> {
+    let mut it = s.chars();
+    let c = it.next()?;
+    (it.next().is_none() && c.is_ascii_punctuation()).then_some(c)
 }
 
 impl KeyMap {
@@ -194,10 +224,22 @@ impl KeyMap {
             .into_iter()
             .map(|(k, c)| (parse_key(k).expect("valid default key"), c))
             .collect();
+        let mut chars = default_char_bindings();
         let mut warnings = Vec::new();
         for (key, name) in overrides {
             let Some(spec) = parse_key(key) else {
-                warnings.push(format!("キー指定が不正です: {key}"));
+                if let Some(c) = parse_char(key) {
+                    chars.retain(|(k, _)| *k != c);
+                    if name.eq_ignore_ascii_case("none") {
+                        continue;
+                    }
+                    match Command::from_name(name) {
+                        Some(cmd) => chars.push((c, cmd)),
+                        None => warnings.push(format!("不明なコマンドです: {name}")),
+                    }
+                } else {
+                    warnings.push(format!("キー指定が不正です: {key}"));
+                }
                 continue;
             };
             bindings.retain(|(k, _)| *k != spec);
@@ -209,11 +251,15 @@ impl KeyMap {
                 None => warnings.push(format!("不明なコマンドです: {name}")),
             }
         }
-        (KeyMap { bindings }, warnings)
+        (KeyMap { bindings, chars }, warnings)
     }
 
     pub fn lookup(&self, k: &KeySpec) -> Option<&Command> {
         self.bindings.iter().find(|(spec, _)| spec == k).map(|(_, c)| c)
+    }
+
+    pub fn lookup_char(&self, c: char) -> Option<&Command> {
+        self.chars.iter().find(|(k, _)| *k == c).map(|(_, cmd)| cmd)
     }
 }
 
@@ -293,6 +339,38 @@ mod tests {
         assert!(!is_list_only_key(&parse_key("F5").unwrap()));
         assert!(is_list_only_key(&parse_key("/").unwrap()));
         assert!(is_list_only_key(&parse_key("Shift+/").unwrap()));
+    }
+
+    #[test]
+    fn char_bindings() {
+        let (m, w) = KeyMap::new(&BTreeMap::new());
+        assert!(w.is_empty());
+        assert_eq!(m.lookup_char(':'), Some(&Command::CommandLine));
+        assert_eq!(m.lookup_char(';'), None);
+        // "/" stays a key binding, ":" is matched by character.
+        assert!(parse_key("/").is_some());
+        assert!(parse_key(":").is_none());
+        let mut o = BTreeMap::new();
+        o.insert(":".to_string(), "None".to_string());
+        o.insert(";".to_string(), "CommandLine".to_string());
+        o.insert("!".to_string(), "Nope".to_string());
+        o.insert("ab".to_string(), "NewTab".to_string());
+        let (m, w) = KeyMap::new(&o);
+        assert_eq!(m.lookup_char(':'), None);
+        assert_eq!(m.lookup_char(';'), Some(&Command::CommandLine));
+        assert_eq!(w.len(), 2);
+    }
+
+    #[test]
+    fn up_keys() {
+        let (m, _) = KeyMap::new(&BTreeMap::new());
+        assert_eq!(m.lookup(&parse_key("Ctrl+U").unwrap()), Some(&Command::Up));
+        assert_eq!(m.lookup(&parse_key("Ctrl+B").unwrap()), Some(&Command::Up));
+        // Typing in an edit control never navigates.
+        assert!(is_edit_key(&parse_key("Ctrl+U").unwrap()));
+        assert!(is_edit_key(&parse_key("Ctrl+B").unwrap()));
+        assert!(!is_list_only_key(&parse_key("Ctrl+U").unwrap()));
+        assert!(!is_list_command(&Command::Up));
     }
 
     #[test]

@@ -161,6 +161,7 @@ impl App {
             }
         }
         listview::set_count(p.list, 0);
+        self.command_line[side.index()] = false;
         self.sync_filter_bar(side);
     }
 
@@ -190,6 +191,7 @@ impl App {
         }
         self.watch(side);
         self.place_placeholder(side);
+        self.command_line[side.index()] = false;
         self.sync_filter_bar(side);
     }
 

@@ -53,6 +53,8 @@ pub enum Command {
     NarrowStart,
     /// Leave narrowing and show every item again (Esc in the list).
     NarrowClear,
+    /// Open the ":" command line under the list.
+    CommandLine,
 
     SetViewMode(ViewMode),
     SortBy(ColumnId),
@@ -110,6 +112,7 @@ impl Command {
             "ExtendSelectionUp" => ExtendSelectionUp,
             "Narrow" => NarrowStart,
             "NarrowClear" => NarrowClear,
+            "CommandLine" => CommandLine,
             "ToggleHidden" => ToggleHidden,
             "ToggleDotfiles" => ToggleDotfiles,
             "ToggleExtensions" => ToggleExtensions,
@@ -149,6 +152,7 @@ mod tests {
         );
         assert_eq!(Command::from_name("Narrow"), Some(Command::NarrowStart));
         assert_eq!(Command::from_name("NarrowClear"), Some(Command::NarrowClear));
+        assert_eq!(Command::from_name("CommandLine"), Some(Command::CommandLine));
         assert_eq!(Command::from_name("SelectTab0"), None);
         assert_eq!(Command::from_name("nope"), None);
     }

@@ -26,23 +26,97 @@ impl App {
         }
     }
 
+    /// Whether the bar of `side` is shown: narrowing is on or the command line is open.
+    pub fn filter_bar_visible(&self, side: PaneSide) -> bool {
+        self.command_line[side.index()] || self.narrow_of(side).is_some()
+    }
+
     /// Show or hide the filter bar of `side` to match its tab, refilling the edit text.
+    /// While the command line is open its text is left alone.
     pub fn sync_filter_bar(&mut self, side: PaneSide) {
-        let text = self.narrow_of(side).map(str::to_string);
+        let visible = self.filter_bar_visible(side);
+        let text = if self.command_line[side.index()] {
+            None
+        } else {
+            self.narrow_of(side).map(str::to_string)
+        };
         let p = &self.panes[side.index()];
         let (bar, edit) = (p.filter_bar, p.filter_edit);
         let was_visible = unsafe { IsWindowVisible(bar).as_bool() };
         if let Some(t) = &text
             && filterbar::text(edit) != *t
         {
-            self.narrow_syncing = true;
-            filterbar::set_text(edit, t);
-            self.narrow_syncing = false;
+            self.set_bar_text(edit, t);
         }
-        if was_visible != text.is_some() {
+        if was_visible != visible {
             self.layout();
         }
         self.invalidate_filter_bar(side);
+    }
+
+    /// Replace the edit text without treating it as typing.
+    fn set_bar_text(&mut self, edit: HWND, text: &str) {
+        self.narrow_syncing = true;
+        filterbar::set_text(edit, text);
+        self.narrow_syncing = false;
+    }
+
+    /// ":": open the command line under the list of `side`.
+    pub fn command_line_open(&mut self, side: PaneSide) {
+        if self.panes[side.index()].shown.is_none() {
+            return;
+        }
+        self.command_line[side.index()] = true;
+        let edit = self.panes[side.index()].filter_edit;
+        self.set_bar_text(edit, "");
+        self.sync_filter_bar(side);
+        unsafe {
+            let _ = SetFocus(Some(edit));
+        }
+    }
+
+    /// Close the command line; the narrowing input (if any) is shown again.
+    pub fn command_line_close(&mut self, side: PaneSide) {
+        if !std::mem::take(&mut self.command_line[side.index()]) {
+            return;
+        }
+        self.sync_filter_bar(side);
+        unsafe {
+            let _ = SetFocus(Some(self.panes[side.index()].list));
+        }
+    }
+
+    /// Enter in the command line: close it and run what was typed.
+    pub fn command_line_enter(&mut self, side: PaneSide) {
+        let text = filterbar::text(self.panes[side.index()].filter_edit);
+        self.command_line_close(side);
+        match crate::model::cmdline::parse(&text) {
+            Ok(None) => {}
+            Ok(Some(crate::model::cmdline::CmdLine::Shell)) => self.open_shell(side),
+            Err(cmd) => self.show_status(&format!("不明なコマンドです: {cmd}")),
+        }
+    }
+
+    /// ":sh": start a shell in the folder shown in `side`.
+    pub fn open_shell(&mut self, side: PaneSide) {
+        use crate::shell::terminal;
+        let Some(tab) = self.panes[side.index()].shown.and_then(|id| self.tab(id)) else {
+            return;
+        };
+        if matches!(tab.status, TabStatus::NotFound | TabStatus::Error(_)) {
+            return self.show_status("フォルダが見つかりません");
+        }
+        if !tab.location.is_file_system() {
+            return self.show_status("このフォルダではシェルを開けません");
+        }
+        let dir = tab.location.as_str().to_string();
+        let kind = terminal::choose(self.config.shell.as_deref(), terminal::on_path);
+        if dir.starts_with(r"\\") && terminal::is_cmd(&kind) {
+            return self.show_status("コマンドプロンプトは UNC パスのフォルダでは開けません");
+        }
+        if let Err(e) = terminal::launch(&kind, &dir) {
+            self.show_status(&format!("シェルを起動できませんでした: {}", e.trim()));
+        }
     }
 
     /// Re-run the narrowing of the tab shown in `side` after its text changed.
@@ -78,7 +152,7 @@ impl App {
 
     /// EN_CHANGE from the edit control: narrow as the user types.
     pub fn on_narrow_changed(&mut self, side: PaneSide) {
-        if self.narrow_syncing {
+        if self.narrow_syncing || self.command_line[side.index()] {
             return;
         }
         let text = filterbar::text(self.panes[side.index()].filter_edit);

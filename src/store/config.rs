@@ -54,6 +54,9 @@ pub struct Config {
     pub nav_width: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowPlacement>,
+    /// Command line started by ":sh"; automatic choice when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     /// Key overrides, e.g. `"Ctrl+Alt+W" = "WorkspaceList"`.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
@@ -136,6 +139,7 @@ mod tests {
         assert!(!c.show_hidden);
         assert!(!c.show_dotfiles);
         assert!(c.last_workspace.is_none());
+        assert!(c.shell.is_none());
     }
 
     #[test]
@@ -145,6 +149,7 @@ version = 1
 last_workspace = "dev"
 recent_workspaces = ["dev", "photo"]
 window = { x = 100, y = 100, width = 1400, height = 900, maximized = false }
+shell = 'pwsh.exe -NoLogo'
 
 [keys]
 "Ctrl+Alt+W" = "WorkspaceList"
@@ -152,6 +157,7 @@ window = { x = 100, y = 100, width = 1400, height = 900, maximized = false }
         let c = from_toml(text, Path::new("c.toml")).unwrap();
         assert_eq!(c.keys.get("Ctrl+Alt+W").map(String::as_str), Some("WorkspaceList"));
         assert_eq!(c.window.unwrap().width, 1400);
+        assert_eq!(c.shell.as_deref(), Some("pwsh.exe -NoLogo"));
         let again = from_toml(&toml::to_string(&c).unwrap(), Path::new("c.toml")).unwrap();
         assert_eq!(c, again);
     }

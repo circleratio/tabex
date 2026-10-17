@@ -158,9 +158,10 @@ fn paint(hwnd: HWND, app: &App, side: PaneSide) {
         SetTextColor(hdc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
         let g = geometry(hwnd, app.dpi, font_height(hwnd, app.font));
         let mut prompt = super::to_win(g.prompt);
-        let mut slash: Vec<u16> = "/".encode_utf16().collect();
-        DrawTextW(hdc, &mut slash, &mut prompt, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-        if let Some((n, m)) = app.narrow_counts(side) {
+        let command = app.command_line[side.index()];
+        let mut mark: Vec<u16> = if command { ":" } else { "/" }.encode_utf16().collect();
+        DrawTextW(hdc, &mut mark, &mut prompt, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        if !command && let Some((n, m)) = app.narrow_counts(side) {
             let mut count = super::to_win(g.count);
             let mut s: Vec<u16> = format!("{n} / {m} 件").encode_utf16().collect();
             SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
@@ -219,10 +220,15 @@ extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: 
                 let Some(app) = app_of(bar) else {
                     return DefSubclassProc(hwnd, msg, wp, lp);
                 };
+                let command = app.command_line[side.index()];
                 match VIRTUAL_KEY(wp.0 as u16) {
+                    VK_RETURN if command => app.command_line_enter(side),
                     VK_RETURN => app.narrow_commit(side),
+                    VK_ESCAPE if command => app.command_line_close(side),
                     VK_ESCAPE => app.clear_narrow(side),
+                    VK_BACK if empty() && command => app.command_line_close(side),
                     VK_BACK if empty() => app.clear_narrow(side),
+                    VK_UP | VK_DOWN if command => {}
                     VK_UP => app.narrow_cursor(side, -1),
                     VK_DOWN => app.narrow_cursor(side, 1),
                     _ => return DefSubclassProc(hwnd, msg, wp, lp),

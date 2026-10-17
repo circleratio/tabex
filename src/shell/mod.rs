@@ -6,5 +6,6 @@ pub mod dragdrop;
 pub mod fileop;
 pub mod icons;
 pub mod names;
+pub mod terminal;
 pub mod thumbs;
 pub mod undo;
