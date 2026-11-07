@@ -40,6 +40,15 @@ pub enum WatchEvent {
     },
 }
 
+impl WatchEvent {
+    /// The key the watched folder was registered with.
+    pub fn key(&self) -> u64 {
+        match self {
+            WatchEvent::Changes { key, .. } | WatchEvent::Overflow { key } | WatchEvent::Failed { key } => *key,
+        }
+    }
+}
+
 enum Cmd {
     Watch { key: u64, dir: String },
     Unwatch { key: u64 },

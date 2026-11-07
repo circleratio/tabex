@@ -8,6 +8,16 @@ use super::*;
 use crate::fs::watch::Change;
 use crate::store::config::{self, UserSettings};
 
+/// Home directories from `[[homes]]` (falling back to `home`), plus warnings for invalid
+/// entries.
+pub fn resolve_homes(specs: &[config::HomeSpec], home: &Location) -> (Vec<crate::model::homes::Home>, Vec<String>) {
+    crate::model::homes::resolve(
+        specs.iter().map(|h| (h.name.as_deref(), h.path.as_deref())),
+        crate::shell::names::expand_env,
+        home,
+    )
+}
+
 /// Watcher key for the settings folder; tab ids never reach it.
 pub const CONFIG_WATCH_KEY: u64 = u64::MAX;
 const CONFIG_RELOAD_DELAY: Duration = Duration::from_millis(300);
@@ -110,11 +120,7 @@ impl App {
             warnings.extend(w);
         }
         if old.homes != u.homes {
-            let (homes, w) = crate::model::homes::resolve(
-                u.homes.iter().map(|h| (h.name.as_deref(), h.path.as_deref())),
-                crate::shell::names::expand_env,
-                &self.home,
-            );
+            let (homes, w) = resolve_homes(&u.homes, &self.home);
             self.homes = homes;
             warnings.extend(w);
         }

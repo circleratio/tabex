@@ -15,6 +15,7 @@ use crate::app::App;
 use crate::model::command::Command;
 use crate::model::layout::scale;
 use crate::store::paths;
+use crate::ui::dialog::{Dialog, Position, run_modal, static_color};
 
 const LIST_CLASS: PCWSTR = w!("TabexWorkspaceList");
 const PROMPT_CLASS: PCWSTR = w!("TabexPrompt");
@@ -322,169 +323,77 @@ pub fn prompt(
     font: HFONT,
     validate: impl Fn(&str) -> std::result::Result<(), String> + 'static,
 ) -> Option<String> {
+    let dlg = Dialog::create(
+        owner,
+        PROMPT_CLASS,
+        Some(prompt_proc),
+        title,
+        (404, 140),
+        Position::Below(120),
+        font,
+    )?;
+    dlg.label(label, (12, 12, 380, 20));
+    let edit = dlg.edit(initial, 0, (12, 36, 380, 26), 100);
+    let error = dlg.label("", (12, 68, 380, 20));
+    dlg.default_button("OK", (212, 100, 86, 28), ID_OK);
+    dlg.button("キャンセル", (306, 100, 86, 28), ID_CANCEL);
     unsafe {
-        let instance: HINSTANCE = GetModuleHandleW(None).ok()?.into();
-        let wc = WNDCLASSW {
-            hInstance: instance,
-            lpszClassName: PROMPT_CLASS,
-            lpfnWndProc: Some(prompt_proc),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let dpi = super::dpi::window_dpi(owner);
-        let s = |v| scale(v, dpi);
-        let mut rc = RECT::default();
-        let _ = GetWindowRect(owner, &mut rc);
-        let (w, h) = (s(420), s(180));
-        let hwnd = CreateWindowExW(
-            WS_EX_DLGMODALFRAME,
-            PROMPT_CLASS,
-            &HSTRING::from(title),
-            WS_POPUP | WS_CAPTION | WS_SYSMENU,
-            (rc.left + rc.right - w) / 2,
-            rc.top + s(120),
-            w,
-            h,
-            Some(owner),
-            None,
-            Some(instance),
-            None,
-        )
-        .ok()?;
-        let mk = |class: PCWSTR, text: &str, style: WINDOW_STYLE, ex: WINDOW_EX_STYLE, x, y, cw, ch, id: i32| {
-            let c = CreateWindowExW(
-                ex,
-                class,
-                &HSTRING::from(text),
-                WS_CHILD | WS_VISIBLE | style,
-                x,
-                y,
-                cw,
-                ch,
-                Some(hwnd),
-                Some(HMENU(id as usize as *mut _)),
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-            c
-        };
-        mk(
-            w!("STATIC"),
-            label,
-            WINDOW_STYLE(0),
-            WINDOW_EX_STYLE(0),
-            s(12),
-            s(12),
-            s(380),
-            s(20),
-            0,
-        );
-        let edit = mk(
-            w!("EDIT"),
-            initial,
-            WS_TABSTOP | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            WS_EX_CLIENTEDGE,
-            s(12),
-            s(36),
-            s(380),
-            s(26),
-            100,
-        );
-        let error = mk(
-            w!("STATIC"),
-            "",
-            WINDOW_STYLE(0),
-            WINDOW_EX_STYLE(0),
-            s(12),
-            s(68),
-            s(380),
-            s(20),
-            0,
-        );
-        mk(
-            w!("BUTTON"),
-            "OK",
-            WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
-            WINDOW_EX_STYLE(0),
-            s(212),
-            s(100),
-            s(86),
-            s(28),
-            ID_OK,
-        );
-        mk(
-            w!("BUTTON"),
-            "キャンセル",
-            WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32),
-            WINDOW_EX_STYLE(0),
-            s(306),
-            s(100),
-            s(86),
-            s(28),
-            ID_CANCEL,
-        );
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
         SHAutoComplete(edit, SHACF_AUTOSUGGEST_FORCE_OFF | SHACF_AUTOAPPEND_FORCE_OFF).ok();
-        PROMPT.with(|p| {
-            *p.borrow_mut() = Some(PromptState {
-                edit,
-                error,
-                result: None,
-                validate: Box::new(validate),
-            })
-        });
-
-        let _ = EnableWindow(owner, false);
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetFocus(Some(edit));
-        let mut msg = MSG::default();
-        loop {
-            if PROMPT.with(|p| p.borrow().as_ref().is_none_or(|s| s.result.is_some())) {
-                break;
-            }
-            if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                PostQuitMessage(msg.wParam.0 as i32);
-                break;
-            }
-            if msg.message == WM_KEYDOWN && VIRTUAL_KEY(msg.wParam.0 as u16) == VK_ESCAPE {
-                finish_prompt(false);
-                continue;
-            }
-            if IsDialogMessageW(hwnd, &msg).as_bool() {
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        let _ = EnableWindow(owner, true);
-        let _ = DestroyWindow(hwnd);
-        let _ = SetForegroundWindow(owner);
-        PROMPT.with(|p| p.borrow_mut().take()).and_then(|s| s.result.flatten())
     }
+    PROMPT.with(|p| {
+        *p.borrow_mut() = Some(PromptState {
+            edit,
+            error,
+            result: None,
+            validate: Box::new(validate),
+        })
+    });
+    unsafe {
+        let _ = ShowWindow(dlg.hwnd, SW_SHOW);
+        let _ = SetFocus(Some(edit));
+    }
+    run_modal(
+        owner,
+        dlg.hwnd,
+        || PROMPT.with(|p| p.borrow().as_ref().is_none_or(|s| s.result.is_some())),
+        |msg| {
+            let esc = msg.message == WM_KEYDOWN && VIRTUAL_KEY(msg.wParam.0 as u16) == VK_ESCAPE;
+            if esc {
+                finish_prompt(false);
+            }
+            esc
+        },
+    );
+    PROMPT.with(|p| p.borrow_mut().take()).and_then(|s| s.result.flatten())
 }
 
 fn finish_prompt(ok: bool) {
-    PROMPT.with(|p| {
+    // Validate under the borrow, but show the error after releasing it: setting the text
+    // repaints the static at once, and WM_CTLCOLORSTATIC reads the state again.
+    let failed = PROMPT.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(s) = p.as_mut() else { return };
+        let s = p.as_mut()?;
         if !ok {
             s.result = Some(None);
-            return;
+            return None;
         }
         let text = super::window_text(s.edit);
         match (s.validate)(&text) {
-            Ok(()) => s.result = Some(Some(text)),
-            Err(e) => unsafe {
-                let _ = SetWindowTextW(s.error, &HSTRING::from(e));
-                windows::Win32::System::Diagnostics::Debug::MessageBeep(MB_ICONWARNING).ok();
-                let _ = SetFocus(Some(s.edit));
-            },
+            Ok(()) => {
+                s.result = Some(Some(text));
+                None
+            }
+            Err(e) => Some((s.edit, s.error, e)),
         }
     });
+    if let Some((edit, error, message)) = failed {
+        unsafe {
+            let _ = SetWindowTextW(error, &HSTRING::from(message));
+            windows::Win32::System::Diagnostics::Debug::MessageBeep(MB_ICONWARNING).ok();
+            let _ = SetFocus(Some(edit));
+        }
+    }
 }
 
 extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -499,13 +408,8 @@ extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 LRESULT(0)
             }
             WM_CTLCOLORSTATIC => {
-                let is_error = PROMPT.with(|p| p.borrow().as_ref().is_some_and(|s| s.error.0 == lp.0 as *mut _));
-                let hdc = HDC(wp.0 as *mut _);
-                if is_error {
-                    SetTextColor(hdc, COLORREF(0x0000_20C0));
-                }
-                SetBkMode(hdc, TRANSPARENT);
-                LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize)
+                let error = PROMPT.with(|p| p.try_borrow().ok().and_then(|s| s.as_ref().map(|s| s.error)));
+                static_color(wp, lp, error)
             }
             WM_CLOSE => {
                 finish_prompt(false);

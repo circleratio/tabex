@@ -426,10 +426,7 @@ impl App {
     }
 
     pub fn on_watch(&mut self, ev: WatchEvent) {
-        let key = match &ev {
-            WatchEvent::Changes { key, .. } | WatchEvent::Overflow { key } | WatchEvent::Failed { key } => *key,
-        };
-        if key == super::settings::CONFIG_WATCH_KEY {
+        if ev.key() == super::settings::CONFIG_WATCH_KEY {
             return self.on_config_watch(ev);
         }
         match ev {

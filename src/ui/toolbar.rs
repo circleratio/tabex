@@ -6,6 +6,7 @@ use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
+use super::send;
 use crate::model::layout::scale;
 use crate::model::toolbar::{
     BUTTONS, ButtonId, ButtonKind, Glyph, ToolbarState, VIEW_MODES, checked, enabled, view_mode_index,
@@ -29,10 +30,6 @@ pub struct Toolbar {
     last: Option<ToolbarState>,
     /// TTN_GETDISPINFOW text must outlive the notification.
     tip: Vec<u16>,
-}
-
-fn send(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> LRESULT {
-    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }
 }
 
 fn makelong(lo: i32, hi: i32) -> isize {

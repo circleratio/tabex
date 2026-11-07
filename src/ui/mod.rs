@@ -2,6 +2,7 @@
 
 pub mod accel;
 pub mod addressbar;
+pub mod dialog;
 pub mod dpi;
 pub mod filterbar;
 pub mod format;
@@ -17,6 +18,11 @@ use windows::Win32::Foundation::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::model::layout::Rect;
+
+/// SendMessageW with plain integer arguments.
+pub fn send(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> LRESULT {
+    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }
+}
 
 pub fn wz(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()

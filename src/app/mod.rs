@@ -368,11 +368,7 @@ impl App {
         let wn = notifier.clone();
         let watcher = Watcher::new(move |ev| wn.send(WorkerMsg::Watch(ev))).ok();
         let (keymap, mut warnings) = KeyMap::new(&config.keys);
-        let (homes, home_warnings) = crate::model::homes::resolve(
-            config.homes.iter().map(|h| (h.name.as_deref(), h.path.as_deref())),
-            crate::shell::names::expand_env,
-            &home,
-        );
+        let (homes, home_warnings) = settings::resolve_homes(&config.homes, &home);
         warnings.extend(home_warnings);
         let mut app = App {
             hwnd,

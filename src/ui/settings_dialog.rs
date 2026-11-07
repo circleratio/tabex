@@ -7,15 +7,15 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 use super::accel::{KeyMap, KeySpec, KeyTable, format_key};
+use super::dialog::{Dialog, Position, run_modal, static_color};
+use super::send;
 use crate::app::App;
 use crate::model::command::{CATALOG, Command};
 use crate::model::homes::is_absolute;
@@ -101,10 +101,6 @@ thread_local! {
 /// them; such nested calls find the state borrowed and do nothing (`f` refreshes itself).
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
     STATE.with(|s| s.try_borrow_mut().ok()?.as_mut().map(f))
-}
-
-fn send(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> LRESULT {
-    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }
 }
 
 fn label_of(name: &str) -> &'static str {
@@ -211,20 +207,21 @@ fn update_home_buttons(s: &State) {
     enable(s.home_buttons[3], sel.is_some_and(|i| i + 1 < n));
 }
 
-fn key_text(s: &State, name: &str) -> String {
-    let mut keys: Vec<String> = s.table.keys_of(name).iter().map(format_key).collect();
+/// Keys of `name` for the command list; `map` supplies character bindings such as ":",
+/// which are shown but edited in config.toml.
+fn key_text(table: &KeyTable, map: &KeyMap, name: &str) -> String {
+    let mut keys: Vec<String> = table.keys_of(name).iter().map(format_key).collect();
     if let Some(cmd) = Command::from_name(name) {
-        // Character bindings such as ":" are shown but edited in config.toml.
-        let (map, _) = KeyMap::new(&s.current().keys);
         keys.extend(map.chars_of(&cmd).into_iter().map(|c| c.to_string()));
     }
     keys.join(", ")
 }
 
 fn refresh_commands(s: &mut State) {
+    let (map, _) = KeyMap::new(&s.current().keys);
     let rows: Vec<Vec<String>> = CATALOG
         .iter()
-        .map(|c| vec![c.label.to_string(), key_text(s, c.name)])
+        .map(|c| vec![c.label.to_string(), key_text(&s.table, &map, c.name)])
         .collect();
     let sel = lv_selected(s.cmds);
     s.syncing = true;
@@ -509,13 +506,23 @@ fn goes_to_capture(msg: &MSG, capture: HWND) -> bool {
 /// Modal; returns after the dialog is closed.
 pub fn show(app: &mut App) {
     let main = app.hwnd;
-    let font = app.font;
     let page = app.settings_page.min(PAGES.len() - 1);
     let baseline = app.config.user_settings();
     app.settings_dialog_open = true;
-    let hwnd = unsafe { create(main, font, page, baseline) };
-    if let Some(hwnd) = hwnd {
-        unsafe { run_modal(main, hwnd) };
+    if let Some(hwnd) = create(main, app.font, page, baseline) {
+        run_modal(
+            main,
+            hwnd,
+            || with(|s| s.done).unwrap_or(true),
+            |msg| {
+                let capture = with(|s| s.capture).unwrap_or_default();
+                let to_capture = goes_to_capture(msg, capture);
+                if to_capture {
+                    unsafe { DispatchMessageW(msg) };
+                }
+                to_capture
+            },
+        );
     }
     let (applied, page) = STATE
         .with(|s| s.borrow_mut().take())
@@ -523,8 +530,7 @@ pub fn show(app: &mut App) {
             unsafe {
                 let _ = DeleteObject(s.bold.into());
             }
-            let page = s.page;
-            (s.applied, page)
+            (s.applied, s.page)
         })
         .unwrap_or((false, page));
     let Some(app) = App::from_hwnd(main) else { return };
@@ -539,216 +545,9 @@ pub fn show(app: &mut App) {
     }
 }
 
-unsafe fn run_modal(main: HWND, hwnd: HWND) {
+/// Bold variant of `font`, for changed key bindings.
+fn bold_font(font: HFONT) -> HFONT {
     unsafe {
-        let _ = EnableWindow(main, false);
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let mut msg = MSG::default();
-        loop {
-            if with(|s| s.done).unwrap_or(true) {
-                break;
-            }
-            if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                PostQuitMessage(msg.wParam.0 as i32);
-                break;
-            }
-            let capture = with(|s| s.capture).unwrap_or_default();
-            if goes_to_capture(&msg, capture) {
-                DispatchMessageW(&msg);
-                continue;
-            }
-            if IsDialogMessageW(hwnd, &msg).as_bool() {
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        let _ = EnableWindow(main, true);
-        let _ = DestroyWindow(hwnd);
-        let _ = SetForegroundWindow(main);
-    }
-}
-
-unsafe fn create(main: HWND, font: HFONT, page: usize, baseline: UserSettings) -> Option<HWND> {
-    unsafe {
-        let instance: HINSTANCE = GetModuleHandleW(None).ok()?.into();
-        let wc = WNDCLASSW {
-            hInstance: instance,
-            lpszClassName: SETTINGS_CLASS,
-            lpfnWndProc: Some(settings_proc),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let dpi = super::dpi::window_dpi(main);
-        let s = |v| scale(v, dpi);
-        let mut wr = RECT {
-            left: 0,
-            top: 0,
-            right: s(560),
-            bottom: s(480),
-        };
-        let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-        let ex = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
-        let _ = AdjustWindowRectExForDpi(&mut wr, style, false, ex, dpi);
-        let (w, h) = (wr.right - wr.left, wr.bottom - wr.top);
-        let mut mr = RECT::default();
-        let _ = GetWindowRect(main, &mut mr);
-        let hwnd = CreateWindowExW(
-            ex,
-            SETTINGS_CLASS,
-            w!("設定"),
-            style,
-            (mr.left + mr.right - w) / 2,
-            (mr.top + mr.bottom - h) / 2,
-            w,
-            h,
-            Some(main),
-            None,
-            Some(instance),
-            None,
-        )
-        .ok()?;
-        let mk = |class: PCWSTR, text: &str, style: u32, ex: WINDOW_EX_STYLE, r: (i32, i32, i32, i32), id: i32| {
-            let c = CreateWindowExW(
-                ex,
-                class,
-                &HSTRING::from(text),
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
-                s(r.0),
-                s(r.1),
-                s(r.2),
-                s(r.3),
-                Some(hwnd),
-                Some(HMENU(id as usize as *mut _)),
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-            c
-        };
-        let none = WINDOW_EX_STYLE(0);
-        let tabstop = WS_TABSTOP.0;
-        let button = |text: &str, r, id| mk(w!("BUTTON"), text, tabstop | BS_PUSHBUTTON as u32, none, r, id);
-        let label = |text: &str, r| mk(w!("STATIC"), text, 0, none, r, 0);
-        let list = |r, id| {
-            mk(
-                WC_LISTVIEWW,
-                "",
-                tabstop | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
-                WS_EX_CLIENTEDGE,
-                r,
-                id,
-            )
-        };
-
-        // Page headers only; the pages live on the dialog background below them.
-        let tab = mk(WC_TABCONTROLW, "", tabstop, none, (12, 12, 536, 30), ID_TAB);
-        for (i, p) in PAGES.iter().enumerate() {
-            let mut t: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
-            let item = TCITEMW {
-                mask: TCIF_TEXT,
-                pszText: PWSTR(t.as_mut_ptr()),
-                ..Default::default()
-            };
-            send(tab, TCM_INSERTITEMW, i, &item as *const _ as isize);
-        }
-
-        // Display.
-        let check = |text: &str, y, id| {
-            mk(
-                w!("BUTTON"),
-                text,
-                tabstop | BS_AUTOCHECKBOX as u32,
-                none,
-                (24, y, 400, 24),
-                id,
-            )
-        };
-        let show: [HWND; 4] = std::array::from_fn(|i| check(SHOW_LABELS[i], 60 + 32 * i as i32, ID_SHOW[i]));
-        let set_check = |h: HWND, on: bool| send(h, BM_SETCHECK, if on { BST_CHECKED.0 } else { 0 } as usize, 0);
-        set_check(show[0], baseline.show_hidden);
-        set_check(show[1], baseline.show_dotfiles);
-        set_check(show[2], baseline.show_extensions);
-        set_check(show[3], baseline.nav_tree_visible);
-        let page0 = show.to_vec();
-
-        // Home directories.
-        let homes = list((24, 60, 400, 280), ID_HOMES);
-        lv_columns(homes, &[("名前", 150), ("パス", 230)], dpi);
-        let add = button("追加...", (436, 60, 112, 28), ID_HOME_ADD);
-        let edit = button("編集...", (436, 96, 112, 28), ID_HOME_EDIT);
-        let del = button("削除", (436, 132, 112, 28), ID_HOME_DEL);
-        let up = button("上へ", (436, 180, 112, 28), ID_HOME_UP);
-        let down = button("下へ", (436, 216, 112, 28), ID_HOME_DOWN);
-        let note1 = label(
-            "先頭がプライマリ（ホームボタンの左クリックと Alt+Home の移動先）です。\r\n一覧が空のときは、ユーザーフォルダがホームディレクトリになります。",
-            (24, 350, 524, 44),
-        );
-        let page1 = vec![homes, add, edit, del, up, down, note1];
-
-        // Keys.
-        let cmds = list((24, 60, 524, 200), ID_CMDS);
-        lv_columns(cmds, &[("コマンド", 250), ("キー", 240)], dpi);
-        let keys = list((24, 270, 230, 96), ID_KEYS);
-        lv_columns(keys, &[("キー", 200)], dpi);
-        let cap_label = label("キーの入力:", (266, 270, 120, 20));
-        let capture = mk(
-            w!("EDIT"),
-            "",
-            tabstop | ES_READONLY as u32 | ES_AUTOHSCROLL as u32,
-            WS_EX_CLIENTEDGE,
-            (266, 292, 180, 26),
-            ID_CAPTURE,
-        );
-        let _ = SetWindowSubclass(capture, Some(capture_proc), 1, 0);
-        let assign = button("割り当て", (454, 291, 94, 28), ID_ASSIGN);
-        let key_del = button("削除", (266, 330, 86, 28), ID_KEY_DEL);
-        let reset = button("既定に戻す", (360, 330, 120, 28), ID_KEY_RESET);
-        let reset_all = button("すべて既定に戻す", (24, 374, 160, 28), ID_KEY_RESET_ALL);
-        let note2 = label(
-            "「:」のように文字で割り当てるキーは、config.toml で変更します。",
-            (192, 380, 356, 40),
-        );
-        let page2 = vec![cmds, keys, cap_label, capture, assign, key_del, reset, reset_all, note2];
-
-        // Other.
-        let shell_label = label("シェル（:sh で起動するコマンド）:", (24, 60, 524, 20));
-        let shell = mk(
-            w!("EDIT"),
-            baseline.shell.as_deref().unwrap_or(""),
-            tabstop | ES_AUTOHSCROLL as u32,
-            WS_EX_CLIENTEDGE,
-            (24, 84, 524, 26),
-            ID_SHELL,
-        );
-        let note3 = label(
-            "空欄のときは Windows Terminal → PowerShell 7 → Windows PowerShell → コマンドプロンプトの順に探します。",
-            (24, 116, 524, 40),
-        );
-        let migemo = check("migemo を使う", 172, ID_MIGEMO);
-        set_check(migemo, baseline.migemo);
-        let note4 = label(
-            "tabex.exe と同じフォルダに rustmigemo.dll と辞書があるときに使われます。",
-            (24, 200, 524, 40),
-        );
-        let page3 = vec![shell_label, shell, note3, migemo, note4];
-
-        let ok = mk(
-            w!("BUTTON"),
-            "OK",
-            tabstop | BS_DEFPUSHBUTTON as u32,
-            none,
-            (268, 440, 86, 28),
-            ID_OK,
-        );
-        let cancel = button("キャンセル", (362, 440, 86, 28), ID_CANCEL);
-        let apply = button("適用", (456, 440, 92, 28), ID_APPLY);
-        let _ = (ok, cancel);
-
-        // Bold variant of the font for changed key bindings.
         let mut lf = LOGFONTW::default();
         GetObjectW(
             font.into(),
@@ -756,44 +555,152 @@ unsafe fn create(main: HWND, font: HFONT, page: usize, baseline: UserSettings) -
             Some(&mut lf as *mut _ as *mut _),
         );
         lf.lfWeight = FW_BOLD.0 as i32;
-        let bold = CreateFontIndirectW(&lf);
-
-        let state = State {
-            hwnd,
-            main,
-            font,
-            bold,
-            tab,
-            pages: [page0, page1, page2, page3],
-            show,
-            homes,
-            home_buttons: [edit, del, up, down],
-            cmds,
-            keys,
-            capture,
-            key_buttons: [assign, key_del, reset],
-            shell,
-            migemo,
-            apply,
-            table: KeyTable::from_overrides(&baseline.keys),
-            work: baseline.clone(),
-            baseline,
-            captured: None,
-            applied: false,
-            page,
-            done: false,
-            syncing: false,
-        };
-        STATE.with(|st| *st.borrow_mut() = Some(state));
-        with(|s| {
-            refresh_homes(s, None);
-            refresh_commands(s);
-            update_apply(s);
-            send(s.tab, TCM_SETCURSEL, page, 0);
-            show_page(s, page);
-        });
-        Some(hwnd)
+        CreateFontIndirectW(&lf)
     }
+}
+
+fn create(main: HWND, font: HFONT, page: usize, baseline: UserSettings) -> Option<HWND> {
+    let dlg = Dialog::create(
+        main,
+        SETTINGS_CLASS,
+        Some(settings_proc),
+        "設定",
+        (560, 480),
+        Position::Center,
+        font,
+    )?;
+    let none = WINDOW_EX_STYLE(0);
+    let tabstop = WS_TABSTOP.0;
+    let list = |r, id| {
+        dlg.child(
+            WC_LISTVIEWW,
+            "",
+            tabstop | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
+            WS_EX_CLIENTEDGE,
+            r,
+            id,
+        )
+    };
+    let check = |text: &str, y, id| {
+        dlg.child(
+            w!("BUTTON"),
+            text,
+            tabstop | BS_AUTOCHECKBOX as u32,
+            none,
+            (24, y, 400, 24),
+            id,
+        )
+    };
+    let set_check = |h: HWND, on: bool| send(h, BM_SETCHECK, if on { BST_CHECKED.0 } else { 0 } as usize, 0);
+
+    // Page headers only; the pages live on the dialog background below them.
+    let tab = dlg.child(WC_TABCONTROLW, "", tabstop, none, (12, 12, 536, 30), ID_TAB);
+    for (i, p) in PAGES.iter().enumerate() {
+        let mut t: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
+        let item = TCITEMW {
+            mask: TCIF_TEXT,
+            pszText: PWSTR(t.as_mut_ptr()),
+            ..Default::default()
+        };
+        send(tab, TCM_INSERTITEMW, i, &item as *const _ as isize);
+    }
+
+    // Display.
+    let show: [HWND; 4] = std::array::from_fn(|i| check(SHOW_LABELS[i], 60 + 32 * i as i32, ID_SHOW[i]));
+    set_check(show[0], baseline.show_hidden);
+    set_check(show[1], baseline.show_dotfiles);
+    set_check(show[2], baseline.show_extensions);
+    set_check(show[3], baseline.nav_tree_visible);
+    let page0 = show.to_vec();
+
+    // Home directories.
+    let homes = list((24, 60, 400, 280), ID_HOMES);
+    lv_columns(homes, &[("名前", 150), ("パス", 230)], dlg.dpi);
+    let add = dlg.button("追加...", (436, 60, 112, 28), ID_HOME_ADD);
+    let edit = dlg.button("編集...", (436, 96, 112, 28), ID_HOME_EDIT);
+    let del = dlg.button("削除", (436, 132, 112, 28), ID_HOME_DEL);
+    let up = dlg.button("上へ", (436, 180, 112, 28), ID_HOME_UP);
+    let down = dlg.button("下へ", (436, 216, 112, 28), ID_HOME_DOWN);
+    let note1 = dlg.label(
+        "先頭がプライマリ（ホームボタンの左クリックと Alt+Home の移動先）です。\r\n一覧が空のときは、ユーザーフォルダがホームディレクトリになります。",
+        (24, 350, 524, 44),
+    );
+    let page1 = vec![homes, add, edit, del, up, down, note1];
+
+    // Keys.
+    let cmds = list((24, 60, 524, 200), ID_CMDS);
+    lv_columns(cmds, &[("コマンド", 250), ("キー", 240)], dlg.dpi);
+    let keys = list((24, 270, 230, 96), ID_KEYS);
+    lv_columns(keys, &[("キー", 200)], dlg.dpi);
+    let cap_label = dlg.label("キーの入力:", (266, 270, 120, 20));
+    let capture = dlg.edit("", ES_READONLY as u32, (266, 292, 180, 26), ID_CAPTURE);
+    unsafe {
+        let _ = SetWindowSubclass(capture, Some(capture_proc), 1, 0);
+    }
+    let assign = dlg.button("割り当て", (454, 291, 94, 28), ID_ASSIGN);
+    let key_del = dlg.button("削除", (266, 330, 86, 28), ID_KEY_DEL);
+    let reset = dlg.button("既定に戻す", (360, 330, 120, 28), ID_KEY_RESET);
+    let reset_all = dlg.button("すべて既定に戻す", (24, 374, 160, 28), ID_KEY_RESET_ALL);
+    let note2 = dlg.label(
+        "「:」のように文字で割り当てるキーは、config.toml で変更します。",
+        (192, 380, 356, 40),
+    );
+    let page2 = vec![cmds, keys, cap_label, capture, assign, key_del, reset, reset_all, note2];
+
+    // Other.
+    let shell_label = dlg.label("シェル（:sh で起動するコマンド）:", (24, 60, 524, 20));
+    let shell = dlg.edit(baseline.shell.as_deref().unwrap_or(""), 0, (24, 84, 524, 26), ID_SHELL);
+    let note3 = dlg.label(
+        "空欄のときは Windows Terminal → PowerShell 7 → Windows PowerShell → コマンドプロンプトの順に探します。",
+        (24, 116, 524, 40),
+    );
+    let migemo = check("migemo を使う", 172, ID_MIGEMO);
+    set_check(migemo, baseline.migemo);
+    let note4 = dlg.label(
+        "tabex.exe と同じフォルダに rustmigemo.dll と辞書があるときに使われます。",
+        (24, 200, 524, 40),
+    );
+    let page3 = vec![shell_label, shell, note3, migemo, note4];
+
+    dlg.default_button("OK", (268, 440, 86, 28), ID_OK);
+    dlg.button("キャンセル", (362, 440, 86, 28), ID_CANCEL);
+    let apply = dlg.button("適用", (456, 440, 92, 28), ID_APPLY);
+
+    let state = State {
+        hwnd: dlg.hwnd,
+        main,
+        font,
+        bold: bold_font(font),
+        tab,
+        pages: [page0, page1, page2, page3],
+        show,
+        homes,
+        home_buttons: [edit, del, up, down],
+        cmds,
+        keys,
+        capture,
+        key_buttons: [assign, key_del, reset],
+        shell,
+        migemo,
+        apply,
+        table: KeyTable::from_overrides(&baseline.keys),
+        work: baseline.clone(),
+        baseline,
+        captured: None,
+        applied: false,
+        page,
+        done: false,
+        syncing: false,
+    };
+    STATE.with(|st| *st.borrow_mut() = Some(state));
+    with(|s| {
+        refresh_homes(s, None);
+        refresh_commands(s);
+        update_apply(s);
+        send(s.tab, TCM_SETCURSEL, page, 0);
+        show_page(s, page);
+    });
+    Some(dlg.hwnd)
 }
 
 fn on_notify(hdr: &NMHDR, lp: LPARAM) -> LRESULT {
@@ -980,13 +887,8 @@ extern "system" fn entry_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 LRESULT(0)
             }
             WM_CTLCOLORSTATIC => {
-                let is_error = ENTRY.with(|e| e.borrow().as_ref().is_some_and(|e| e.error.0 == lp.0 as *mut _));
-                let hdc = HDC(wp.0 as *mut _);
-                if is_error {
-                    SetTextColor(hdc, COLORREF(0x0000_20C0));
-                }
-                SetBkMode(hdc, TRANSPARENT);
-                LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize)
+                let error = ENTRY.with(|e| e.try_borrow().ok().and_then(|e| e.as_ref().map(|e| e.error)));
+                static_color(wp, lp, error)
             }
             WM_CLOSE => {
                 finish_entry(false);
@@ -1003,136 +905,55 @@ const ID_BROWSE: i32 = 102;
 
 /// Small modal dialog for one home directory; None when cancelled.
 fn home_entry(owner: HWND, font: HFONT, initial: &HomeSpec) -> Option<HomeSpec> {
+    let title = if initial.path.is_some() {
+        "ホームディレクトリの編集"
+    } else {
+        "ホームディレクトリの追加"
+    };
+    let dlg = Dialog::create(
+        owner,
+        ENTRY_CLASS,
+        Some(entry_proc),
+        title,
+        (464, 206),
+        Position::Center,
+        font,
+    )?;
+    dlg.label("名前（省略可）:", (12, 12, 440, 20));
+    let name = dlg.edit(
+        initial.name.as_deref().unwrap_or(""),
+        0,
+        (12, 34, 440, 26),
+        ID_ENTRY_NAME,
+    );
+    dlg.label("パス:", (12, 70, 440, 20));
+    let path = dlg.edit(
+        initial.path.as_deref().unwrap_or(""),
+        0,
+        (12, 92, 344, 26),
+        ID_ENTRY_PATH,
+    );
+    dlg.button("参照...", (364, 91, 88, 28), ID_BROWSE);
+    let error = dlg.label("", (12, 126, 440, 20));
+    dlg.default_button("OK", (272, 164, 86, 28), ID_OK);
+    dlg.button("キャンセル", (366, 164, 86, 28), ID_CANCEL);
+    ENTRY.with(|e| {
+        *e.borrow_mut() = Some(EntryState {
+            name,
+            path,
+            error,
+            result: None,
+        })
+    });
     unsafe {
-        let instance: HINSTANCE = GetModuleHandleW(None).ok()?.into();
-        let wc = WNDCLASSW {
-            hInstance: instance,
-            lpszClassName: ENTRY_CLASS,
-            lpfnWndProc: Some(entry_proc),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            hbrBackground: GetSysColorBrush(COLOR_BTNFACE),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let dpi = super::dpi::window_dpi(owner);
-        let s = |v| scale(v, dpi);
-        let mut rc = RECT::default();
-        let _ = GetWindowRect(owner, &mut rc);
-        let (w, h) = (s(480), s(250));
-        let title = if initial.path.is_some() {
-            "ホームディレクトリの編集"
-        } else {
-            "ホームディレクトリの追加"
-        };
-        let hwnd = CreateWindowExW(
-            WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-            ENTRY_CLASS,
-            &HSTRING::from(title),
-            WS_POPUP | WS_CAPTION | WS_SYSMENU,
-            (rc.left + rc.right - w) / 2,
-            (rc.top + rc.bottom - h) / 2,
-            w,
-            h,
-            Some(owner),
-            None,
-            Some(instance),
-            None,
-        )
-        .ok()?;
-        let mk = |class: PCWSTR, text: &str, style: u32, ex: WINDOW_EX_STYLE, r: (i32, i32, i32, i32), id: i32| {
-            let c = CreateWindowExW(
-                ex,
-                class,
-                &HSTRING::from(text),
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
-                s(r.0),
-                s(r.1),
-                s(r.2),
-                s(r.3),
-                Some(hwnd),
-                Some(HMENU(id as usize as *mut _)),
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(c, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-            c
-        };
-        let none = WINDOW_EX_STYLE(0);
-        let tabstop = WS_TABSTOP.0;
-        let edit_style = tabstop | ES_AUTOHSCROLL as u32;
-        mk(w!("STATIC"), "名前（省略可）:", 0, none, (12, 12, 440, 20), 0);
-        let name = mk(
-            w!("EDIT"),
-            initial.name.as_deref().unwrap_or(""),
-            edit_style,
-            WS_EX_CLIENTEDGE,
-            (12, 34, 440, 26),
-            ID_ENTRY_NAME,
-        );
-        mk(w!("STATIC"), "パス:", 0, none, (12, 70, 440, 20), 0);
-        let path = mk(
-            w!("EDIT"),
-            initial.path.as_deref().unwrap_or(""),
-            edit_style,
-            WS_EX_CLIENTEDGE,
-            (12, 92, 344, 26),
-            ID_ENTRY_PATH,
-        );
-        mk(
-            w!("BUTTON"),
-            "参照...",
-            tabstop | BS_PUSHBUTTON as u32,
-            none,
-            (364, 91, 88, 28),
-            ID_BROWSE,
-        );
-        let error = mk(w!("STATIC"), "", 0, none, (12, 126, 440, 20), 0);
-        mk(
-            w!("BUTTON"),
-            "OK",
-            tabstop | BS_DEFPUSHBUTTON as u32,
-            none,
-            (272, 164, 86, 28),
-            ID_OK,
-        );
-        mk(
-            w!("BUTTON"),
-            "キャンセル",
-            tabstop | BS_PUSHBUTTON as u32,
-            none,
-            (366, 164, 86, 28),
-            ID_CANCEL,
-        );
-        ENTRY.with(|e| {
-            *e.borrow_mut() = Some(EntryState {
-                name,
-                path,
-                error,
-                result: None,
-            })
-        });
-        let _ = EnableWindow(owner, false);
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(dlg.hwnd, SW_SHOW);
         let _ = SetFocus(Some(if initial.path.is_some() { path } else { name }));
-        let mut msg = MSG::default();
-        loop {
-            if ENTRY.with(|e| e.borrow().as_ref().is_none_or(|e| e.result.is_some())) {
-                break;
-            }
-            if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                PostQuitMessage(msg.wParam.0 as i32);
-                break;
-            }
-            if IsDialogMessageW(hwnd, &msg).as_bool() {
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        let _ = EnableWindow(owner, true);
-        let _ = DestroyWindow(hwnd);
-        let _ = SetForegroundWindow(owner);
-        ENTRY.with(|e| e.borrow_mut().take()).and_then(|e| e.result.flatten())
     }
+    run_modal(
+        owner,
+        dlg.hwnd,
+        || ENTRY.with(|e| e.borrow().as_ref().is_none_or(|e| e.result.is_some())),
+        |_| false,
+    );
+    ENTRY.with(|e| e.borrow_mut().take()).and_then(|e| e.result.flatten())
 }
