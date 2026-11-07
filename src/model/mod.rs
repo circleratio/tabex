@@ -7,4 +7,5 @@ pub mod layout;
 pub mod listing;
 pub mod narrow;
 pub mod tabs;
+pub mod toolbar;
 pub mod workspace;

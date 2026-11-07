@@ -110,7 +110,7 @@ impl App {
 
     pub fn workspace_new(&mut self, from_current: bool) {
         if from_current {
-            return self.workspace_save_as();
+            return self.workspace_new_from_current();
         }
         let initial = paths::unique_name("新しいワークスペース", &self.existing_names(None));
         let Some(name) = self.ask_name("新しいワークスペース", &initial, None) else {
@@ -124,9 +124,10 @@ impl App {
         self.activate_workspace(ws);
     }
 
-    pub fn workspace_save_as(&mut self) {
+    /// Copy the current layout under a new name and keep working in the copy.
+    fn workspace_new_from_current(&mut self) {
         let initial = paths::unique_name(&self.ws.name, &self.existing_names(None));
-        let Some(name) = self.ask_name("名前を付けて保存", &initial, None) else {
+        let Some(name) = self.ask_name("今の構成を元に新規作成", &initial, None) else {
             return;
         };
         self.save_now();
@@ -146,7 +147,7 @@ impl App {
         self.save_config();
         self.update_title();
         self.refresh_nav_workspaces();
-        self.show_status(&format!("ワークスペース \"{name}\" を保存しました"));
+        self.show_status(&format!("ワークスペース \"{name}\" を作成しました"));
     }
 
     pub fn workspace_rename(&mut self, old: &str) {

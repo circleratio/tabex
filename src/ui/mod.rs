@@ -9,6 +9,7 @@ pub mod listview;
 pub mod navtree;
 pub mod tabbar;
 pub mod theme;
+pub mod toolbar;
 pub mod workspace_dialog;
 
 use windows::Win32::Foundation::*;

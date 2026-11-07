@@ -50,6 +50,7 @@ tabex/
 │   │   ├── listing.rs       # Entry, Listing, sorted index, filter, selection
 │   │   ├── narrow.rs        # narrowing query, migemo pattern parser and matcher
 │   │   ├── layout.rs        # window geometry
+│   │   ├── toolbar.rs       # toolbar button definitions and state (pure)
 │   │   └── command.rs       # Command enum
 │   ├── store/               # persistence
 │   │   ├── mod.rs           # StoreError, atomic write, open_or_create
@@ -73,6 +74,7 @@ tabex/
 │   │   ├── dragdrop.rs      # IDropTarget
 │   │   └── migemo.rs        # optional rustmigemo.dll next to the exe
 │   ├── ui/
+│   │   ├── toolbar.rs       # ToolbarWindow32 wrapper, glyph image lists
 │   │   ├── tabbar.rs        # custom drawn (GDI, double buffered)
 │   │   ├── addressbar.rs    # breadcrumb + Edit with SHAutoComplete
 │   │   ├── listview.rs      # LVS_OWNERDATA virtual list helpers
@@ -88,7 +90,8 @@ tabex/
 │       ├── panes.rs         # binding tabs to controls, enumeration results, list notifications
 │       ├── shellops.rs      # file operations, clipboard, D&D, context menu, thumbnails
 │       ├── workspaces.rs    # workspace save/switch/rename/delete
-│       ├── menu.rs          # menu bar and popup menus
+│       ├── menu.rs          # popup menus (no menu bar)
+│       ├── toolbar.rs       # toolbar commands, dropdown, tooltips, state sync
 │       ├── tree.rs          # navigation tree notifications
 │       └── worker.rs        # thread pools and UI wake-up
 ├── tests/                   # integration tests (Windows only)
@@ -191,7 +194,7 @@ pub struct Listing {
 
 ### 3.4 コマンド（`model::command`）
 
-メニュー・ショートカット・ツールバー・起動引数などからの操作は、すべて `Command` 列挙型に変換してから `App::execute(cmd)` に渡す。
+ツールバー・右クリックメニュー・ショートカット・起動引数などからの操作は、すべて `Command` 列挙型に変換してから `App::execute(cmd)` に渡す。
 
 ```rust
 pub enum Command {
@@ -201,10 +204,14 @@ pub enum Command {
     Open, OpenInNewTab, Rename, NewFolder, Delete { permanent: bool },
     Copy, Cut, Paste, Undo, SelectAll, Properties,
     SetViewMode(ViewMode), SortBy(ColumnId), ToggleHidden, ToggleDotfiles, ToggleExtensions,
-    WorkspaceList, WorkspaceNew { from_current: bool }, WorkspaceSaveAs(String),
+    WorkspaceList, WorkspaceNew { from_current: bool },
     WorkspaceRename(String), WorkspaceDelete(String), WorkspaceSwitch(String),
 }
 ```
+
+- メニューバーをなくすのに合わせて、`WorkspaceSaveAs` と `Exit` は持たない（要求仕様 §3.1、§5.3）。
+  - `config.toml` の `[keys]` に `WorkspaceSaveAs` と書かれていた場合は、互換のため `WorkspaceNew { from_current: true }` として読む（動きは同じ）。警告は出さない。
+  - 「今の構成を元に新規作成」の実体は、これまでの `App::workspace_save_as` を `workspace_new_from_current` に改名したものとする。名前を尋ねるダイアログの題名は「今の構成を元に新規作成」にする。
 
 ## 4. 永続化（`store`）
 
@@ -372,7 +379,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ メニューバー（ファイル / 編集 / 表示 / ワークスペース）       │
+│ [↶] │ [▦▾] │ [隠][.*][拡] │ [ツリー][2ペイン] │ [⟳]          │  ← toolbar
 ├──────────┬──────────────────────┬────────────────────────┤
 │          │ [tab][tab][+]        │ [tab][+]               │  ← tabbar (custom)
 │ navtree  │ ← → ↑ C:\ › src ›    │ ← → ↑ D:\ › data       │  ← addressbar
@@ -383,6 +390,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 └──────────────────────────────────────────────────────────┘
 ```
 
+- メニューバーは作らない（`SetMenu` を呼ばず、ウィンドウクラスにもメニューを指定しない）。
 - 各部品の配置は `model::layout::compute(client: Rect, dpi: u32, state: &LayoutState) -> LayoutRects` で計算する。これは純粋関数なので、テストで検証できる。ウィンドウのサイズが変わったら、`DeferWindowPos` でまとめて配置し直す。
 - アクティブなペインは、タブバーの下に 2px のアクセントカラーの線を引いて示す。
 - コモンコントロールは v6 を使う（マニフェストで指定する）。ListView には `SetWindowTheme(L"Explorer")` を適用し、見た目をエクスプローラに合わせる。
@@ -461,12 +469,18 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
   - 上部に名前の絞り込み用の Edit を置き、その下に最近使った順で一覧を並べる。
   - Enter で選んだワークスペースに切り替え、Esc で閉じる。
 - 一覧の項目を右クリックすると、名前の変更と削除ができる。削除するときは確認ダイアログを出す。
-- メニューの「ワークスペース」には、新規 / 名前を付けて保存 / 名前の変更 / 削除と、最近使ったワークスペース（最大 10 件）を並べる。
+- 今開いているワークスペースはツリーからは削除できない（§7.5.1）ので、この一覧の右クリックメニューで削除する。
 
 ### 7.7 キーボード（`ui::accel`）
 
 - キーと `Command` の対応表を持つ。既定の表は下記のとおりで、`config.toml` の `[keys]` に書いた内容で上書きできる。
-- 割り当てのない Alt+英字キーは、`WM_SYSCOMMAND(SC_KEYMENU)` としてメインウィンドウに送る。こうすると、フォーカスがどのコントロールにあってもメニューバーが開く。
+- メニューバーがないので、Alt キーではメニューを開かない（要求仕様 §9）。
+  - `pre_translate`: 割り当てのない Alt+英字キーは、Edit 以外にフォーカスがあれば消費して何もしない（`TranslateMessage` に渡さないので `WM_SYSCHAR` も作られず、ビープも鳴らない）。これまでの `SC_KEYMENU` を送る処理は削除する。
+  - `main_proc`: `WM_SYSCOMMAND` で `wParam & 0xFFF0 == SC_KEYMENU` のときは、`lParam` が `' '`（Alt+Space でシステムメニューを開く OS 標準の操作）でなければ何もせず 0 を返す。Alt を単独で押して離したとき（`lParam == 0`）や、Edit の中で押した Alt+英字（Edit の既定処理が親へ送ってくる）がこれに当たる。
+  - Alt+F4 は `SC_CLOSE` なので影響しない。Alt+←/→/↑・Alt+D・Alt+Enter は割り当てがあるので今までどおり効く。
+- ツールチップ用に、割り当てからキーの表記を引けるようにする（§7.11）。
+  - `pub fn format_key(k: &KeySpec) -> String`: `parse_key` の逆。修飾キーは `Ctrl` → `Alt` → `Shift` の順に `+` でつなぐ。キー名は、英字・数字なら大文字 1 文字、F キーなら `F1`〜`F24`、それ以外なら `parse_key` が受け付ける名前の先頭を大文字にしたもの（`Enter`、`Delete`、`PageDown` など）にする。`parse_key(&format_key(k)) == Some(k)` が成り立つこと。
+  - `KeyMap::key_for(&self, cmd: &Command) -> Option<&KeySpec>`: `bindings` を先頭から探し、最初に見つかったキーを返す。既定の割り当てが先に並ぶので、`Refresh` は `Ctrl+R` ではなく `F5` になる。`[keys]` で `F5 = "None"` とすると `Ctrl+R` になる。
 - キー入力はメッセージループの `TranslateAcceleratorW` より前で判定する。ただし Edit コントロール（リネーム中やアドレス入力中）にフォーカスがあるときは、文字の入力・編集に使うキー（Backspace など）を横取りしない。
   - Ctrl+U / Ctrl+B（既定では `Up`）も `is_edit_key` に含め、Edit にフォーカスがあるときは割り当てを引かない。標準の Edit はこの 2 つで何もしないので、入力中は「何もしない」になる（要求仕様 §9）。ツリーやタブバーなど Edit 以外では、Alt+↑ と同じく効く。
 
@@ -518,7 +532,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 ### 7.8 DPI とテーマ
 
-- DPI はモニターごとの設定に対応する（Per-Monitor V2）。`WM_DPICHANGED` を受けたら、フォントとイメージリストを作り直し、レイアウトを計算し直す。
+- DPI はモニターごとの設定に対応する（Per-Monitor V2）。`WM_DPICHANGED` を受けたら、フォントとイメージリスト（ツールバーのアイコンを含む。§7.11）を作り直し、レイアウトを計算し直す。
 - OS がダークモードのときは、`DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` でタイトルバーだけを暗くする。ウィンドウの中身までは対応しない（要求仕様で対象外としたため）。
 
 ### 7.9 絞り込み表示（`ui::filterbar`）
@@ -733,6 +747,143 @@ pub fn launch(kind: &ShellKind, dir: &str) -> Result<(), String>
   4. `launch` が失敗したら「シェルを起動できませんでした: (エラー)」。
   - どれもステータスバー（`show_status`）に出す。
 
+### 7.11 ツールバー（`model::toolbar`、`ui::toolbar`、`app::toolbar`）
+
+要求仕様 §3.1 のツールバー。コモンコントロールのツールバー（`ToolbarWindow32`）を使い、ボタンの押し込み・ホバー・無効の表示・ドロップダウン・ツールチップはコントロールに任せる。アイコンは画像ファイルを持たない。アイコンフォントのグリフを DPI に合わせてその場で描き、イメージリストにする。
+
+#### ボタンの定義（`model::toolbar`、純粋関数）
+
+```rust
+pub enum ButtonId { Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh }
+pub enum ButtonKind { Push, Check, Dropdown }
+pub enum Glyph { Icon(char), Text(&'static str) }
+
+pub struct ButtonDef {
+    pub id: ButtonId,
+    pub kind: ButtonKind,
+    pub label: &'static str,       // tooltip name, e.g. "隠しファイル"
+    pub command: Option<Command>,  // None for ViewMode (chosen from the dropdown)
+    pub group: u8,                 // a separator goes between different groups
+    pub glyph: Glyph,              // image; ViewMode's follows the view mode instead
+}
+
+/// Snapshot of everything the toolbar shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ToolbarState {
+    pub can_undo: bool,
+    pub view_mode: ViewMode,
+    pub show_hidden: bool,
+    pub show_dotfiles: bool,
+    pub show_extensions: bool,
+    pub nav_visible: bool,
+    pub dual: bool,
+}
+
+pub const BUTTONS: [ButtonDef; 8];                  // left to right
+pub const VIEW_MODES: [(ViewMode, &str, Glyph); 5]; // dropdown order: large, medium, small, list, details
+pub fn checked(id: ButtonId, st: &ToolbarState) -> bool;
+pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool;  // false only for Undo without history
+pub fn glyph(id: ButtonId, st: &ToolbarState) -> Glyph;   // ViewMode follows st.view_mode
+pub fn tooltip(label: &str, key: Option<&str>) -> String; // "隠しファイル (Ctrl+H)" / "ファイル名拡張子"
+pub fn def(id: ButtonId) -> &'static ButtonDef;
+pub fn view_mode_index(mode: ViewMode) -> usize;          // position in VIEW_MODES
+```
+
+| `ButtonId` | 種類 | `label` | `command` | group | グリフ |
+|---|---|---|---|---|---|
+| `Undo` | Push | 元に戻す | `Undo` | 0 | U+E7A7（Undo） |
+| `ViewMode` | Dropdown | 表示モード | なし | 1 | 今のモードのグリフ（`VIEW_MODES`） |
+| `Hidden` | Check | 隠しファイル | `ToggleHidden` | 2 | U+E7B3（目） |
+| `Dotfiles` | Check | ドットファイル | `ToggleDotfiles` | 2 | `Text(".*")` |
+| `Extensions` | Check | ファイル名拡張子 | `ToggleExtensions` | 2 | `Text(".ext")` |
+| `NavTree` | Check | ナビゲーション ウィンドウ | `ToggleNavTree` | 3 | U+E90C（左側のパネル） |
+| `Layout` | Check | 2 ペイン表示 | `ToggleLayout` | 3 | U+F57C（左右に 2 分割） |
+| `Refresh` | Push | 最新の情報に更新 | `Refresh` | 4 | U+E72C（Refresh） |
+
+- `VIEW_MODES` のグリフは、大アイコン U+EB9F（画像）、中アイコン U+F0E2（2×2）、小アイコン U+E80A（3×3）、一覧 U+E8FD、詳細 U+E71D とする。
+- グリフは、Segoe MDL2 Assets（Windows 10）と Segoe Fluent Icons（Windows 11）の両方で同じ番号に同じ意味の絵があるものを、両フォントの描画を見比べて選んだ。番号は `model::toolbar` の 1 か所にだけ書く。ドットファイルと拡張子にはふさわしい絵がないので、`Glyph::Text` で短い文字を描く。
+- `label` とツールチップの文言は、要求仕様 §3.1 の表のボタン名と同じにする。
+
+#### コントロール（`ui::toolbar`）
+
+```rust
+pub struct Toolbar {
+    pub hwnd: HWND,
+    images: HIMAGELIST,          // normal glyphs, COLOR_BTNTEXT
+    disabled: HIMAGELIST,        // same glyphs, COLOR_GRAYTEXT
+    last: Option<ToolbarState>,  // skip updates when nothing changed
+    tip: Vec<u16>,               // TTN_GETDISPINFOW text must outlive the notification
+}
+impl Toolbar {
+    pub fn create(parent: HWND, id: i32, dpi: u32) -> Result<Toolbar>; // id: ID_TOOLBAR (125)
+    pub fn set_dpi(&mut self, dpi: u32);            // rebuild image lists and button size
+    pub fn rebuild_images(&mut self);               // WM_SYSCOLORCHANGE / WM_SETTINGCHANGE
+    pub fn apply(&mut self, st: &ToolbarState);     // TB_CHECKBUTTON / TB_ENABLEBUTTON / TB_CHANGEBITMAP
+    pub fn button_id(id: ButtonId) -> i32;          // TOOLBAR_BASE (6000) + index in BUTTONS
+    pub fn button_of(cmd_id: i32) -> Option<ButtonId>;
+    pub fn button_rect(&self, id: ButtonId) -> RECT; // client coords, for the dropdown position
+    pub fn set_tip(&mut self, text: &str) -> PWSTR;
+}
+```
+
+- 作りかた: `CreateWindowExW(TOOLBARCLASSNAMEW)` で作る。スタイルは `WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_NODIVIDER | CCS_NOPARENTALIGN | CCS_NORESIZE` とし、`WS_TABSTOP` は付けない。配置はステータスバーと同じく `layout` で行う。
+  - `TB_BUTTONSTRUCTSIZE` を送ってから、`TB_ADDBUTTONSW` で `BUTTONS` を登録する。group が変わるところには `BTNS_SEP` を挟む。種類の対応は、Push → `BTNS_BUTTON`、Check → `BTNS_CHECK`、Dropdown → `BTNS_WHOLEDROPDOWN` とする。文字列（`iString`）は持たせず、アイコンだけにする。
+  - `TB_SETIMAGELIST` / `TB_SETDISABLEDIMAGELIST` には下のイメージリストを渡す。ボタンの大きさは `TB_SETBUTTONSIZE` で `scale(28, dpi)` 四方にする。
+- グリフのイメージリスト: アイコンの大きさは `scale(16, dpi)` とする。
+  - フォントは「Segoe Fluent Icons」があればそれを使い、なければ「Segoe MDL2 Assets」を使う。フォントがあるかは、「Segoe Fluent Icons」を指定して作ったフォントを DC に選び、`GetTextFaceW` が同じ名前を返すかで調べる。結果は `OnceLock` に覚えておく。`Glyph::Text` は Segoe UI の太字で描き、文字列がアイコンの幅に収まるまでフォントを小さくする。
+  - 描きかた: 32bpp のトップダウン DIB に、黒地に白で文字を中央に描く（`ANTIALIASED_QUALITY` を使い、ClearType にはしない）。次に各画素の明るさをアルファ値とみなし、指定の色（`GetSysColor(COLOR_BTNTEXT)` / `COLOR_GRAYTEXT`）の乗算済みアルファの画素に変換して、`ImageList_Create(ILC_COLOR32)` で作ったリストに追加する。
+  - 画像の並び: 先に `BUTTONS` の順のグリフ（`ViewMode` の位置には詳細のグリフ）を置き、その後ろに `VIEW_MODES` の 5 つを続ける。`ViewMode` ボタンの画像は、`TB_CHANGEBITMAP` で今のモードの番号に差し替える。
+- `apply`: 渡された状態が `last` と同じなら何もしない。違えば、各ボタンの `checked` / `enabled` と、`ViewMode` の画像だけを送り直す。
+- `rebuild_images`: イメージリストを作り直して差し替え、古いリストを破棄する。そのあと `last` を消して `apply` し直し、`ViewMode` の画像の番号を送り直す。
+- テーマ: ツールバーの背景はコントロールの既定（OS の配色）に任せる。ダークモードでの中身の配色は対象外とする（§7.8）。
+
+#### App への組み込み（`app::toolbar`）
+
+- `App` に `toolbar: ui::toolbar::Toolbar` を持たせ、`App::new` でステータスバーと一緒に作る。作れなかったときは、ほかのコントロールと同じく起動エラーにする。
+- `App::toolbar_state(&self) -> ToolbarState`: 次の値から作る。
+  - `undo_stack` が空でないか
+  - アクティブなタブの `view.mode`
+  - `config` の各表示設定
+  - `ws.layout == Layout::Dual` かどうか
+- `App::sync_toolbar(&mut self)`: `toolbar_state()` を `Toolbar::apply` に渡す。差分がなければ何もしないので、気にせず呼んでよい。呼ぶのは次の場所とする。
+  - `execute` の最後。表示設定の切り替え、表示モード、タブ・ペイン・ワークスペースの切り替え、元に戻すは、すべて `Command` を通る。途中で return する分岐があるので、これまでの本体は `run_command` に移し、`execute` は `run_command` → `sync_toolbar` の順に呼ぶだけにする。
+  - `set_active_pane` の最後。一覧をクリックしてペインが変わったときのため。
+  - `on_worker` でファイル操作が終わり、`undo_stack` が変わったとき
+  - 起動して、最初のワークスペースを表示した直後
+- ボタンを押したとき: ツールバーは `WM_COMMAND`（`lParam` はツールバーの HWND）を親に送る。`on_command` で `ctl == self.toolbar.hwnd` なら、`Toolbar::button_of(id)` でボタンを引き、その `command` を `execute` する。
+  - `BTNS_CHECK` のボタンは、クリックすると見た目が先に切り替わる。それでも `execute` の最後の `sync_toolbar` が設定から状態を作り直すので、見た目と設定のずれは残らない。
+- 表示モード:
+  - `TBN_DROPDOWN` を受けたら、`button_rect(ViewMode)` の左下を画面座標に直し、`MenuState::track` で `VIEW_MODES` の 5 項目を出す。
+  - 各項目の文字は「名前\tキー」とする。キーは `key_for(SetViewMode(m))` を `format_key` で表記したもの。今のモードには印を付ける。
+  - 項目が選ばれたら `SetViewMode(m)` を `execute` し、通知には `TBDDRET_DEFAULT` を返す。
+- ツールチップ: `WM_NOTIFY` の `TTN_GETDISPINFOW` で、`idFrom` がツールバーのボタンのときに処理する。
+  - `tooltip(label, key_for(command).map(format_key))` の結果を `Toolbar::set_tip` に入れ、その文字列を `lpszText` に渡す。
+  - `ViewMode` はキーを付けず「表示モード」だけにする。キーが 5 つあるため、それぞれドロップダウンの項目に出す。
+  - キーの割り当ては起動中に変わらないので、通知のたびに作り直してよい。
+- フォーカス: ツールバーのボタンは、クリックしてもフォーカスを取らない（`WS_TABSTOP` を付けず、`TB_SETHOTITEM` などのキーボード操作も使わない）。
+  - ツールバーのボタンが実行するコマンドは、どれもフォーカスを動かさない（`Refresh` もフォーカスはそのまま）。
+  - 例外として、`ToggleNavTree` でツリーを隠したとき、フォーカスがツリー（またはその子）にあれば `focus_active_list` で一覧へ移す（要求仕様 §3.1）。キーで切り替えた場合も同じ。
+  - ドロップダウンのメニューは、閉じるとフォーカスを元に戻す。
+  - クリックの前後でフォーカスが変わらないことは、手動確認で確かめる（`doc/plan.md`）。
+- DPI: `on_dpi_changed` で `toolbar.set_dpi(dpi)` を呼んでから `layout` する。
+- 配色: `WM_SYSCOLORCHANGE` と `WM_SETTINGCHANGE` で `rebuild_images` を呼ぶ（状態の付け直しは `rebuild_images` の中で行う）。
+
+#### レイアウト（`model::layout`）
+
+- `TOOLBAR_HEIGHT: i32 = 32`（96 DPI のときの値）を追加する。
+- `LayoutRects` に `toolbar: Rect` を追加する。
+  - `compute` は、クライアント領域の上端から `scale(TOOLBAR_HEIGHT, dpi)` の高さを、幅いっぱいにツールバーへ割り当てる。
+  - その下から `status` の上までを、今までの `body` にする。ナビゲーションツリー・ペイン・スプリッタは、すべて `body` の中に置く（スプリッタのドラッグ判定もこの `body` を使う）。
+- `App::layout` で `ui::place(self.toolbar.hwnd, r.toolbar, true)` を行う。
+
+#### メニューバーの撤去（`app::menu`）
+
+- `MenuState` は、右クリックなどのポップアップメニュー専用にする。
+  - 削除するもの: `build`、`on_init_menu_popup`、`id_of`、フィールドの `cmds` / `view_menu` / `workspace_menu` / `recent`、定数の `STATIC_BASE` / `RECENT_BASE`
+  - 残すもの: `track` / `track_ex` / `column_menu`
+- App 側で削除するもの: `App::new` の `SetMenu`、`main_proc` の `WM_INITMENUPOPUP` の分岐（`App::on_init_menu_popup` の呼び出し）、`on_command` の `menu.command_for` の分岐
+- シェルの右クリックメニュー用の `WM_INITMENUPOPUP` の転送（`context_menu::handle_menu_msg`）は `match` より前にあるので、そのまま残る。
+
 ## 8. 起動、単一インスタンス、コマンドライン
 
 ### 8.1 コマンドライン（`cli`）
@@ -842,7 +993,7 @@ strip = true
 | `model::history` | 戻る・進むの動き。新しく移動したら進む用の履歴が消えること。上限の 100 件 |
 | `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき。絞り込み（`name_matches` の大小無視・拡張子を含むこと・日本語、`set_query` での絞り込みと解除、隠しファイル設定との組み合わせ、追加・名前変更・削除への追従、隠れた項目が選択から外れること、`total_len`） |
 | `model::narrow` | `Pattern::parse`: 文字・エスケープ・文字クラス（中のエスケープを含む）・入れ子のグループ・連結したグループ、閉じていない括弧や末尾の `\` がエラーになること。`is_match`: 名前の途中での一致、大小無視、`kaisha` の実際のパターンで「会社案内.pdf」「かいしゃ」「カイシャ」に一致し「会議」に一致しないこと、先頭の文字の索引で枝を取りこぼさないこと（同じ先頭文字の枝が複数・クラスで始まる枝・グループで始まる枝）。`Query::matches`: パターンがあっても部分一致の項目が一致すること、パターンなしのとき部分一致だけになること、`PartialEq` |
-| `model::layout` | 絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
+| `model::layout` | ツールバーが上端に幅いっぱいで置かれ、ナビゲーションツリーとペインがその下から始まること（DPI 150% では高さ 48px）。絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
 | `store::config` | 既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
@@ -852,7 +1003,9 @@ strip = true
 | `model::workspace` | 親フォルダの求め方（ドライブのルート、UNC）、パンくずの分割、タブタイトル |
 | `model::cmdline` | `sh`、前後の空白、空行、知らないコマンド、大文字の `SH` |
 | `shell::terminal` | `choose` の優先順位（見つかるものを差し替える）と設定の優先、`command_line` の引用符とドライブのルート、`is_cmd` |
-| `ui::accel` | キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
+| `model::toolbar` | ボタンの並びと区切り（要求仕様 §3.1 の表の順）、各ボタンの `command`、`checked` / `enabled` が `ToolbarState` に従うこと（元に戻すの履歴がないときだけ無効になること）、`ViewMode` のグリフが表示モードに従うこと、`tooltip` のキーありとキーなし |
+| `model::command` | `from_name("WorkspaceSaveAs")` が `WorkspaceNew { from_current: true }` になること |
+| `ui::accel` | `format_key` と `parse_key` の往復（修飾キーの順・名前付きキー・F キー）、`key_for` が既定の割り当てを先に返すことと、`None` で外したときに次の割り当てを返すこと、キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
 | `shell::dragdrop` | ドロップ効果の決定（Ctrl・Shift、同じドライブかどうか、UNC、許可されていない効果） |
@@ -878,4 +1031,4 @@ strip = true
 
 ### 11.4 手動確認
 
-GUI の見た目と操作、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）、`rustmigemo.dll` の読み込み（DLL と辞書は配布物にもリポジトリにも含めないため）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。
+GUI の見た目と操作（ツールバーのアイコンの見た目・ツールチップ・フォーカスが動かないこと・Alt キーで何も起きないことを含む）、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）、`rustmigemo.dll` の読み込み（DLL と辞書は配布物にもリポジトリにも含めないため）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。

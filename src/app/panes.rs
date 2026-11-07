@@ -576,6 +576,9 @@ impl App {
         if hdr.hwndFrom == self.nav.hwnd {
             return self.on_tree_notify(hdr, lp);
         }
+        if let Some(r) = self.on_toolbar_notify(hdr, lp) {
+            return r;
+        }
         if let Some(side) = self.side_of_list(hdr.hwndFrom) {
             return self.on_list_notify(side, hdr, lp);
         }

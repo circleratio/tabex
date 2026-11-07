@@ -79,6 +79,38 @@ pub fn parse_key(s: &str) -> Option<KeySpec> {
     Some(k)
 }
 
+/// Display form of a key spec, e.g. "Ctrl+Shift+H". The inverse of `parse_key`.
+pub fn format_key(k: &KeySpec) -> String {
+    let name = match k.vk {
+        VK_BACK => "Backspace".to_string(),
+        VK_TAB => "Tab".to_string(),
+        VK_RETURN => "Enter".to_string(),
+        VK_ESCAPE => "Esc".to_string(),
+        VK_SPACE => "Space".to_string(),
+        VK_PRIOR => "PageUp".to_string(),
+        VK_NEXT => "PageDown".to_string(),
+        VK_END => "End".to_string(),
+        VK_HOME => "Home".to_string(),
+        VK_LEFT => "Left".to_string(),
+        VK_UP => "Up".to_string(),
+        VK_RIGHT => "Right".to_string(),
+        VK_DOWN => "Down".to_string(),
+        VK_INSERT => "Insert".to_string(),
+        VK_DELETE => "Delete".to_string(),
+        VK_OEM_2 => "/".to_string(),
+        0x30..=0x39 | 0x41..=0x5A => (k.vk as u8 as char).to_string(),
+        vk if (VK_F1..VK_F1 + 24).contains(&vk) => format!("F{}", vk - VK_F1 + 1),
+        vk => format!("0x{vk:02X}"),
+    };
+    let mut s = String::new();
+    for (on, m) in [(k.ctrl, "Ctrl+"), (k.alt, "Alt+"), (k.shift, "Shift+")] {
+        if on {
+            s.push_str(m);
+        }
+    }
+    s + &name
+}
+
 pub fn default_bindings() -> Vec<(&'static str, Command)> {
     use Command::*;
     let mut v = vec![
@@ -258,6 +290,11 @@ impl KeyMap {
         self.bindings.iter().find(|(spec, _)| spec == k).map(|(_, c)| c)
     }
 
+    /// First key bound to `cmd`; defaults come before overrides, so F5 wins over Ctrl+R.
+    pub fn key_for(&self, cmd: &Command) -> Option<&KeySpec> {
+        self.bindings.iter().find(|(_, c)| c == cmd).map(|(k, _)| k)
+    }
+
     pub fn lookup_char(&self, c: char) -> Option<&Command> {
         self.chars.iter().find(|(k, _)| *k == c).map(|(_, cmd)| cmd)
     }
@@ -292,6 +329,52 @@ mod tests {
         assert_eq!(parse_key("Hyper+X"), None);
         assert_eq!(parse_key("F25"), None);
         assert_eq!(parse_key(""), None);
+    }
+
+    #[test]
+    fn format_round_trip() {
+        for s in [
+            "Ctrl+Shift+H",
+            "Ctrl+Alt+W",
+            "Ctrl+Alt+Shift+X",
+            "F5",
+            "F24",
+            "Alt+Enter",
+            "Shift+Delete",
+            "Ctrl+PageDown",
+            "Backspace",
+            "Esc",
+            "Left",
+            "/",
+            "Ctrl+1",
+            "J",
+        ] {
+            let k = parse_key(s).unwrap();
+            assert_eq!(format_key(&k), s);
+            assert_eq!(parse_key(&format_key(&k)), Some(k));
+        }
+        // Modifier order is normalized.
+        assert_eq!(format_key(&parse_key("shift+ctrl+h").unwrap()), "Ctrl+Shift+H");
+    }
+
+    #[test]
+    fn key_for_command() {
+        let (m, _) = KeyMap::new(&BTreeMap::new());
+        let key = |m: &KeyMap, c: Command| m.key_for(&c).map(format_key);
+        assert_eq!(key(&m, Command::Refresh).as_deref(), Some("F5"));
+        assert_eq!(key(&m, Command::ToggleHidden).as_deref(), Some("Ctrl+H"));
+        assert_eq!(key(&m, Command::Undo).as_deref(), Some("Ctrl+Z"));
+        assert_eq!(
+            key(&m, Command::SetViewMode(ViewMode::IconsLarge)).as_deref(),
+            Some("Ctrl+Shift+1")
+        );
+        assert_eq!(key(&m, Command::ToggleExtensions), None);
+        let mut o = BTreeMap::new();
+        o.insert("F5".to_string(), "None".to_string());
+        o.insert("Ctrl+Q".to_string(), "ToggleExtensions".to_string());
+        let (m, _) = KeyMap::new(&o);
+        assert_eq!(key(&m, Command::Refresh).as_deref(), Some("Ctrl+R"));
+        assert_eq!(key(&m, Command::ToggleExtensions).as_deref(), Some("Ctrl+Q"));
     }
 
     #[test]

@@ -598,3 +598,83 @@ start target\release\tabex.exe
 
 **完了条件**
 - `cargo test`・`cargo clippy --all-targets -- -D warnings` が通り、上の 1〜9 がすべて期待どおりになる。
+
+---
+
+# 追加機能: メニューバーをツールバーに置き換える
+
+要求仕様 §3.1・§5.3・§9、設計 §3.4・§7.7・§7.11 の実装手順。T1 と T2 は並行して進められる。T3 は T1 のあと、T4 は T2・T3 のあとに行う。T5 は T4 のあとに行い、T6 で仕上げる。
+
+## T1. model: ボタンの定義とレイアウト
+
+**やること**
+- `model::toolbar` を作る（`ButtonId` / `ButtonKind` / `Glyph` / `ButtonDef` / `ToolbarState` / `BUTTONS` / `VIEW_MODES` / `checked` / `enabled` / `glyph` / `tooltip`）。グリフの番号はこの段階では候補のまま置き、T3 で確定する。
+- `model::layout` に `TOOLBAR_HEIGHT` と `LayoutRects::toolbar` を足し、`compute` と `ratio_from_drag` がツールバーの下を `body` として使うようにする。既存のテストの期待値をツールバーの高さの分だけ直す。
+- 設計 §11.1 の観点（`model::toolbar`、`model::layout`）で単体テストを書く。
+
+**完了条件**
+- `cargo test` で、追加・修正したテストを含めて全件成功する。
+
+## T2. コマンドとキー表記
+
+**やること**
+- `Command` から `WorkspaceSaveAs` と `Exit` を削除する。`from_name("WorkspaceSaveAs")` は `WorkspaceNew { from_current: true }` を返す。
+- `App::workspace_save_as` を `workspace_new_from_current` に改名し、ダイアログの題名を「今の構成を元に新規作成」にする。
+- `ui::accel` に `format_key` と `KeyMap::key_for` を足す。
+- 設計 §11.1 の観点（`model::command`、`ui::accel`）で単体テストを書く。
+
+**完了条件**
+- `cargo test` で全件成功する（この段階ではメニューが `WorkspaceSaveAs` / `Exit` を参照しているので、`app::menu` の該当項目も合わせて削除してビルドを通す）。
+
+## T3. ツールバーのコントロール（`ui::toolbar`）
+
+**やること**
+- `Toolbar` の `create` / `set_dpi` / `rebuild_images` / `apply` / `button_id` / `button_of` / `button_rect` / `set_tip` を作る。
+- アイコンフォントの判定（Segoe Fluent Icons → Segoe MDL2 Assets）と、グリフから 32bpp のイメージリストを作る処理を作る。
+- 候補の番号を両方のフォントで描いた一覧画像を作って見比べ、`model::toolbar` の番号を確定する。ふさわしい絵がないものは `Glyph::Text` にする。
+
+**完了条件**
+- `cargo build` が通る。
+
+## T4. App への組み込みとメニューバーの撤去
+
+**やること**
+- `App` に `toolbar` を足し、`App::new` で作る。`layout` で配置する。
+- `app::toolbar` に `toolbar_state` / `sync_toolbar` / ボタンの `WM_COMMAND` / `TBN_DROPDOWN` / `TTN_GETDISPINFOW` の処理を作る。`sync_toolbar` を設計 §7.11 の 4 か所で呼ぶ。
+- `on_dpi_changed` で `set_dpi`、`WM_SYSCOLORCHANGE` / `WM_SETTINGCHANGE` で `rebuild_images` を呼ぶ。
+- メニューバーを撤去する: `SetMenu`、`MenuState::build` などの不要になった部分、`WM_INITMENUPOPUP` の分岐、`on_command` の `menu.command_for` の分岐を削除する。
+- Alt キーの処理を変える: `pre_translate` の `SC_KEYMENU` を送る処理を削除して割り当てのない Alt+英字を消費し、`main_proc` で `SC_KEYMENU`（Alt+Space 以外）を握りつぶす。
+
+**完了条件**
+- `cargo build --release` が通り、`cargo clippy --all-targets -- -D warnings` の警告がない。
+- `grep -rn "SetMenu\|on_init_menu_popup\|WorkspaceSaveAs\|SC_KEYMENU" src` で、設計どおりの箇所（`from_name` の互換の対応と `main_proc` の握りつぶし）だけが残っている。
+
+## T5. 手動動作確認
+
+`TABEX_HOME` を一時フォルダに向け、**起動する呼び出しの中で毎回設定して** 確認する。テスト用フォルダに `a.txt`、`.gitignore`、隠し属性を付けた `hidden.txt` を作る。
+
+1. メニューバーがなく、タイトルバーのすぐ下に、左から「元に戻す｜表示モード｜隠しファイル・ドットファイル・ファイル名拡張子｜ナビゲーション ウィンドウ・2 ペイン表示｜最新の情報に更新」の順でアイコンが並び、まとまりの間に区切り線がある。文字のラベルはない。
+2. 各ボタンにマウスを乗せると `隠しファイル (Ctrl+H)`、`ドットファイル (Ctrl+Shift+H)`、`最新の情報に更新 (F5)`、`元に戻す (Ctrl+Z)`、`ファイル名拡張子`（キーなし）、`表示モード` のようなツールチップが出る。`config.toml` の `[keys]` に `"Ctrl+Q" = "ToggleExtensions"` を書いて起動し直すと、`ファイル名拡張子 (Ctrl+Q)` になる。
+3. 隠しファイル・ドットファイル・ファイル名拡張子・ナビゲーション ウィンドウ・2 ペイン表示を押すと、それぞれ切り替わり、オンのときボタンが押し込まれた表示になる。Ctrl+H・Ctrl+Shift+H で切り替えたときもボタンの表示が合う。起動し直しても、保存された設定どおりの表示で始まる。
+4. 表示モードを押すと 5 つのモードのメニュー（各項目にキー表記、今のモードに印）が出て、選ぶとアクティブなタブに適用され、ボタンのアイコンが変わる。Ctrl+Shift+1〜5 で変えたとき、表示モードの違うタブ・ペインに切り替えたときもアイコンが合う。
+5. 起動直後は「元に戻す」が無効の表示。ファイルの名前を変えると有効になり、押すと元に戻って（履歴がなくなれば）また無効になる。
+6. 最新の情報に更新を押すと、外で作ったファイルが一覧に出る。
+7. ファイル一覧で項目を選んだ状態で各ボタンを押しても、フォーカスは一覧に残り、続けて j / k で選択を動かせる。ナビゲーションツリーにフォーカスがあるときも同じくツリーに残る。
+8. Alt を単独で押して離しても、Alt+F・Alt+E・Alt+W を押しても何も起きない（ビープも鳴らない）。アドレスバーの入力中に Alt+F を押しても同じ。Alt+Space でシステムメニュー、Alt+F4 で終了、Alt+← / Alt+D はこれまでどおり効く。
+9. `config.toml` の `[keys]` に `"Ctrl+Q" = "WorkspaceSaveAs"` を書くと、警告なしで起動し、Ctrl+Q で「今の構成を元に新規作成」のダイアログが出る。
+10. 表示スケールを 100% と 150% のモニターの間でウィンドウを動かすと、ツールバーの高さとアイコンがくっきりした大きさで変わり、ペインと重ならない。
+11. Windows 10 と Windows 11 の両方でアイコンが正しい絵で表示される（手元にない方は確認できなかったことを報告する）。OS をダークモードにしても、アイコンが見える。
+- 作業用の一時フォルダを削除する。
+
+**完了条件**
+- 上の 1〜11 がすべて期待どおりになる。
+
+## T6. 仕上げと最終確認
+
+**やること**
+- `README.md` でメニューに触れている箇所（「ワークスペースを使う流れ」の手順 2、ドットファイルの切り替え）を、ナビゲーションツリーとツールバーの操作に書き直す。ツールバーのボタンの一覧を書き足す。
+- 要求仕様 §3.1 の表・メニュー項目の対応表を 1 行ずつ実際の動きと突き合わせる。
+- `cargo test`、`cargo clippy --all-targets -- -D warnings`、`cargo build --release` を実行する。
+
+**完了条件**
+- テストが全件成功し、警告がなく、要求仕様 §3.1・§5.3・§9 に合わない動きが残っていない。

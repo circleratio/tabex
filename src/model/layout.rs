@@ -34,6 +34,7 @@ impl Rect {
 }
 
 /// Sizes in 96-DPI pixels.
+pub const TOOLBAR_HEIGHT: i32 = 32;
 pub const TABBAR_HEIGHT: i32 = 32;
 pub const ADDRESS_HEIGHT: i32 = 32;
 pub const STATUS_HEIGHT: i32 = 24;
@@ -66,6 +67,8 @@ pub struct PaneRects {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LayoutRects {
+    /// Full width strip at the top of the client area.
+    pub toolbar: Rect,
     pub nav: Option<Rect>,
     pub nav_splitter: Option<Rect>,
     /// Indexed by `PaneSide::index()`; `None` when hidden in single layout.
@@ -81,10 +84,13 @@ pub fn scale(v: i32, dpi: u32) -> i32 {
 pub fn compute(client: Rect, dpi: u32, st: &LayoutState) -> LayoutRects {
     let status_h = scale(STATUS_HEIGHT, dpi);
     let status = Rect::new(client.left, client.bottom - status_h, client.right, client.bottom);
-    let body = Rect::new(client.left, client.top, client.right, status.top);
+    let toolbar_bottom = (client.top + scale(TOOLBAR_HEIGHT, dpi)).min(status.top);
+    let toolbar = Rect::new(client.left, client.top, client.right, toolbar_bottom);
+    let body = Rect::new(client.left, toolbar.bottom, client.right, status.top);
     let split_w = scale(SPLITTER_WIDTH, dpi);
 
     let mut out = LayoutRects {
+        toolbar,
         status,
         ..Default::default()
     };
@@ -184,8 +190,22 @@ mod tests {
         assert_eq!(rr.whole.left, 606);
         assert_eq!(rr.whole.right, 1206);
         assert_eq!(r.status, Rect::new(0, 776, 1206, 800));
-        assert_eq!(l.list.top, TABBAR_HEIGHT + ADDRESS_HEIGHT);
+        assert_eq!(l.whole.top, TOOLBAR_HEIGHT);
+        assert_eq!(l.list.top, TOOLBAR_HEIGHT + TABBAR_HEIGHT + ADDRESS_HEIGHT);
         assert_eq!(l.list.bottom, 776);
+    }
+
+    #[test]
+    fn toolbar_spans_the_top() {
+        let r = compute(CLIENT, 96, &st(Layout::Dual, true));
+        assert_eq!(r.toolbar, Rect::new(0, 0, 1206, TOOLBAR_HEIGHT));
+        assert_eq!(r.nav.unwrap().top, TOOLBAR_HEIGHT);
+        assert_eq!(r.nav_splitter.unwrap().top, TOOLBAR_HEIGHT);
+        assert_eq!(r.pane_splitter.unwrap().top, TOOLBAR_HEIGHT);
+        assert_eq!(r.panes[1].unwrap().tabbar.top, TOOLBAR_HEIGHT);
+        let r = compute(Rect::new(0, 0, 3000, 1500), 144, &st(Layout::Single, false));
+        assert_eq!(r.toolbar.height(), 48);
+        assert_eq!(r.panes[1].unwrap().whole.top, 48);
     }
 
     #[test]

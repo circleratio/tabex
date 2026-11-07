@@ -1,6 +1,7 @@
 use super::workspace::{ColumnId, Location, PaneSide, ViewMode};
 
-/// Every user action goes through this enum (menus, keys, tab bar, forwarded command lines).
+/// Every user action goes through this enum (toolbar, popup menus, keys, tab bar, forwarded
+/// command lines).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewTab,
@@ -67,12 +68,9 @@ pub enum Command {
     WorkspaceNew {
         from_current: bool,
     },
-    WorkspaceSaveAs,
     WorkspaceRename,
     WorkspaceDelete,
     WorkspaceSwitch(String),
-
-    Exit,
 }
 
 impl Command {
@@ -118,7 +116,8 @@ impl Command {
             "ToggleExtensions" => ToggleExtensions,
             "WorkspaceList" => WorkspaceList,
             "WorkspaceNew" => WorkspaceNew { from_current: false },
-            "WorkspaceSaveAs" => WorkspaceSaveAs,
+            // Former "save as" menu item; creating from the current layout does the same.
+            "WorkspaceSaveAs" => WorkspaceNew { from_current: true },
             "ViewDetails" => SetViewMode(ViewMode::Details),
             "ViewList" => SetViewMode(ViewMode::List),
             "ViewIconsLarge" => SetViewMode(ViewMode::IconsLarge),
@@ -153,6 +152,11 @@ mod tests {
         assert_eq!(Command::from_name("Narrow"), Some(Command::NarrowStart));
         assert_eq!(Command::from_name("NarrowClear"), Some(Command::NarrowClear));
         assert_eq!(Command::from_name("CommandLine"), Some(Command::CommandLine));
+        assert_eq!(
+            Command::from_name("WorkspaceSaveAs"),
+            Some(Command::WorkspaceNew { from_current: true })
+        );
+        assert_eq!(Command::from_name("Exit"), None);
         assert_eq!(Command::from_name("SelectTab0"), None);
         assert_eq!(Command::from_name("nope"), None);
     }

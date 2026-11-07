@@ -25,6 +25,11 @@ pub fn debug_log(s: &str) {
 
 impl App {
     pub fn execute(&mut self, cmd: Command) {
+        self.run_command(cmd);
+        self.sync_toolbar();
+    }
+
+    fn run_command(&mut self, cmd: Command) {
         use Command::*;
         if std::env::var_os("TABEX_TRACE").is_some() {
             debug_log(&format!("execute {cmd:?}"));
@@ -106,6 +111,13 @@ impl App {
                 self.config.nav_tree_visible = !self.config.nav_tree_visible;
                 self.config_dirty = true;
                 self.layout();
+                // Keyboard input must not go to a hidden tree.
+                let focus = unsafe { GetFocus() };
+                if !self.config.nav_tree_visible
+                    && (focus == self.nav.hwnd || unsafe { IsChild(self.nav.hwnd, focus).as_bool() })
+                {
+                    self.focus_active_list();
+                }
             }
             Back | Forward => {
                 let tab = self.ws.active_tab_mut();
@@ -251,7 +263,6 @@ impl App {
             Properties => self.properties(),
             WorkspaceList => ui::workspace_dialog::show(self),
             WorkspaceNew { from_current } => self.workspace_new(from_current),
-            WorkspaceSaveAs => self.workspace_save_as(),
             WorkspaceRename => {
                 let name = self.ws.name.clone();
                 self.workspace_rename(&name);
@@ -261,9 +272,6 @@ impl App {
                 self.workspace_delete(&name);
             }
             WorkspaceSwitch(name) => self.workspace_switch(&name),
-            Exit => unsafe {
-                let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-            },
         }
     }
 
@@ -368,6 +376,9 @@ impl App {
     }
 
     pub fn on_command(&mut self, id: i32, code: u16, ctl: HWND) {
+        if ctl == self.toolbar.hwnd {
+            return self.on_toolbar_command(id);
+        }
         for side in PaneSide::BOTH {
             let i = side.index();
             if id == ID_RETRY[i] && code as u32 == BN_CLICKED {
@@ -382,11 +393,6 @@ impl App {
                 self.go_nearest_existing_parent(side);
                 return;
             }
-        }
-        if ctl.0.is_null()
-            && let Some(cmd) = self.menu.command_for(id)
-        {
-            self.execute(cmd);
         }
     }
 

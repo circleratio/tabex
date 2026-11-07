@@ -6,6 +6,7 @@ mod middle;
 mod narrow;
 mod panes;
 mod shellops;
+mod toolbar;
 mod tree;
 pub mod worker;
 mod workspaces;
@@ -54,6 +55,7 @@ pub const ID_PARENT: [i32; 2] = [160, 161];
 pub const ID_FILTER_EDIT: [i32; 2] = [170, 171];
 pub const ID_TREE: i32 = 110;
 pub const ID_STATUS: i32 = 120;
+pub const ID_TOOLBAR: i32 = 125;
 
 pub enum WorkerMsg {
     Enum {
@@ -161,6 +163,7 @@ pub struct App {
     pub split_drag: Option<SplitDrag>,
     pub tab_drag: Option<TabDrag>,
     pub menu: menu::MenuState,
+    pub toolbar: ui::toolbar::Toolbar,
     pub status_message: Option<String>,
     pub editing_label: bool,
     pub fileop_pool: Pool,
@@ -279,6 +282,7 @@ unsafe fn run_inner(base: PathBuf, key: u32, args: RunArgs, t0: Instant, tracing
         app.apply_run_args(&args, false);
         app.refresh_panes();
         app.layout();
+        app.sync_toolbar();
         let show = if placement.is_some_and(|p| p.maximized) {
             SW_SHOWMAXIMIZED
         } else {
@@ -346,6 +350,7 @@ impl App {
                 None,
             )?
         };
+        let toolbar = ui::toolbar::Toolbar::create(hwnd, ID_TOOLBAR, dpi)?;
         let (notifier, inbox) = worker::channel_for::<WorkerMsg>(hwnd);
         let wn = notifier.clone();
         let watcher = Watcher::new(move |ev| wn.send(WorkerMsg::Watch(ev))).ok();
@@ -380,6 +385,7 @@ impl App {
             split_drag: None,
             tab_drag: None,
             menu: menu::MenuState::default(),
+            toolbar,
             status_message: None,
             editing_label: false,
             fileop_pool: Pool::new("fileop", 1),
@@ -391,9 +397,6 @@ impl App {
             thumbs: Default::default(),
         };
         app.apply_font();
-        unsafe {
-            let _ = SetMenu(hwnd, Some(app.menu.build()));
-        }
         if !key_warnings.is_empty() {
             app.show_status(&key_warnings.join(" / "));
         }
@@ -437,6 +440,7 @@ impl App {
 
     pub fn layout(&mut self) {
         let r = self.compute_layout();
+        ui::place(self.toolbar.hwnd, r.toolbar, true);
         match r.nav {
             Some(nav) => ui::place(self.nav.hwnd, nav, true),
             None => ui::place(self.nav.hwnd, Rect::default(), false),
@@ -572,6 +576,7 @@ impl App {
             self.invalidate_chrome();
             self.update_status();
             self.update_title();
+            self.sync_toolbar();
         }
     }
 
@@ -616,19 +621,9 @@ impl App {
                     return false;
                 }
                 let Some(cmd) = self.keymap.lookup(&spec).cloned() else {
-                    // Alt+letter opens the matching menu even when a child control has focus.
-                    if spec.alt && !spec.ctrl && (0x41..=0x5A).contains(&spec.vk) && !in_edit {
-                        unsafe {
-                            let _ = PostMessageW(
-                                Some(self.hwnd),
-                                WM_SYSCOMMAND,
-                                WPARAM(SC_KEYMENU as usize),
-                                LPARAM((spec.vk + 0x20) as isize),
-                            );
-                        }
-                        return true;
-                    }
-                    return false;
+                    // There is no menu bar: swallow unbound Alt+letter so it neither opens a
+                    // menu nor beeps. Inside an edit, main_proc drops the resulting SC_KEYMENU.
+                    return spec.alt && !spec.ctrl && (0x41..=0x5A).contains(&spec.vk) && !in_edit;
                 };
                 let in_list = self.panes.iter().any(|p| p.list == focus);
                 if (ui::accel::is_list_command(&cmd) || ui::accel::is_list_only_key(&spec)) && !in_list {
@@ -700,7 +695,11 @@ impl App {
                     key,
                     bmp,
                 } => self.on_thumb(tab, generation, &name, key, bmp),
-                WorkerMsg::FileOp { result, after } => self.on_fileop_done(result, after),
+                WorkerMsg::FileOp { result, after } => {
+                    self.on_fileop_done(result, after);
+                    // The undo history may have changed.
+                    self.sync_toolbar();
+                }
             }
         }
     }
@@ -755,6 +754,7 @@ impl App {
                 ui::listview::set_columns(p.list, &view, dpi);
             }
         }
+        self.toolbar.set_dpi(dpi);
         self.layout();
     }
 
@@ -871,10 +871,6 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 app.on_command(ui::loword(wp.0) as i32, ui::hiword(wp.0), HWND(lp.0 as *mut _));
                 LRESULT(0)
             }
-            WM_INITMENUPOPUP => {
-                app.on_init_menu_popup(HMENU(wp.0 as *mut _));
-                LRESULT(0)
-            }
             WM_COPYDATA => {
                 if let Some(args) = instance::decode(lp) {
                     app.apply_run_args(&args, true);
@@ -923,8 +919,16 @@ extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             WM_SETTINGCHANGE => {
                 theme::apply_title_bar(hwnd);
+                app.toolbar.rebuild_images();
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
+            WM_SYSCOLORCHANGE => {
+                app.toolbar.rebuild_images();
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            // No menu bar: Alt alone or an unbound Alt+letter does nothing. Alt+Space still
+            // opens the system menu.
+            WM_SYSCOMMAND if (wp.0 & 0xFFF0) as u32 == SC_KEYMENU && lp.0 != b' ' as isize => LRESULT(0),
             WM_ACTIVATE => {
                 if ui::loword(wp.0) as u32 != WA_INACTIVE {
                     app.focus_active_list();
