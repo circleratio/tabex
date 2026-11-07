@@ -78,6 +78,20 @@ pub struct Config {
     pub keys: BTreeMap<String, String>,
 }
 
+/// The settings the settings dialog edits and an outside edit of config.toml can change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserSettings {
+    pub show_hidden: bool,
+    pub show_dotfiles: bool,
+    pub show_extensions: bool,
+    pub nav_tree_visible: bool,
+    pub homes: Vec<HomeSpec>,
+    /// `[keys]` overrides as written.
+    pub keys: BTreeMap<String, String>,
+    pub shell: Option<String>,
+    pub migemo: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         toml::from_str("").unwrap()
@@ -85,6 +99,31 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn user_settings(&self) -> UserSettings {
+        UserSettings {
+            show_hidden: self.show_hidden,
+            show_dotfiles: self.show_dotfiles,
+            show_extensions: self.show_extensions,
+            nav_tree_visible: self.nav_tree_visible,
+            homes: self.homes.clone(),
+            keys: self.keys.clone(),
+            shell: self.shell.clone(),
+            migemo: self.migemo,
+        }
+    }
+
+    /// Replace the user settings; window placement, workspaces and the like are kept.
+    pub fn set_user_settings(&mut self, u: UserSettings) {
+        self.show_hidden = u.show_hidden;
+        self.show_dotfiles = u.show_dotfiles;
+        self.show_extensions = u.show_extensions;
+        self.nav_tree_visible = u.nav_tree_visible;
+        self.homes = u.homes;
+        self.keys = u.keys;
+        self.shell = u.shell;
+        self.migemo = u.migemo;
+    }
+
     /// Move `name` to the front of the recent list.
     pub fn touch_recent(&mut self, name: &str) {
         self.recent_workspaces.retain(|n| !n.eq_ignore_ascii_case(name));
@@ -219,6 +258,36 @@ name = "no path"
         assert_eq!(c, again);
         assert!(Config::default().homes.is_empty());
         assert!(!toml::to_string(&Config::default()).unwrap().contains("homes"));
+    }
+
+    #[test]
+    fn user_settings_keep_managed_fields() {
+        let mut c = Config::default();
+        c.touch_recent("dev");
+        c.window = Some(WindowPlacement {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+            maximized: true,
+        });
+        c.nav_width = 300;
+        let mut u = c.user_settings();
+        assert!(!u.show_hidden && u.migemo && u.homes.is_empty());
+        u.show_hidden = true;
+        u.migemo = false;
+        u.shell = Some("cmd.exe".into());
+        u.homes.push(HomeSpec {
+            name: None,
+            path: Some(r"D:\w".into()),
+        });
+        u.keys.insert("Ctrl+Q".into(), "GoHome".into());
+        c.set_user_settings(u.clone());
+        assert_eq!(c.user_settings(), u);
+        assert_eq!(c.last_workspace.as_deref(), Some("dev"));
+        assert_eq!(c.recent_workspaces, ["dev"]);
+        assert_eq!(c.window.unwrap().width, 3);
+        assert_eq!(c.nav_width, 300);
     }
 
     #[test]

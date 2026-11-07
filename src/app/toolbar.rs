@@ -41,11 +41,11 @@ impl App {
 
     pub fn on_toolbar_notify(&mut self, hdr: &NMHDR, lp: LPARAM) -> Option<LRESULT> {
         match hdr.code {
-            TBN_DROPDOWN if hdr.hwndFrom == self.toolbar.hwnd => {
+            TBN_DROPDOWN if self.toolbar.owns(hdr.hwndFrom) => {
                 self.view_mode_menu();
                 Some(LRESULT(TBDDRET_DEFAULT as isize))
             }
-            NM_RCLICK if hdr.hwndFrom == self.toolbar.hwnd => {
+            NM_RCLICK if self.toolbar.owns(hdr.hwndFrom) => {
                 let nm = unsafe { &*(lp.0 as *const NMMOUSE) };
                 if Toolbar::button_of(nm.dwItemSpec as i32) == Some(ButtonId::Home) {
                     self.home_menu();
@@ -78,7 +78,7 @@ impl App {
             y: rc.bottom,
         };
         unsafe {
-            let _ = ClientToScreen(self.toolbar.hwnd, &mut pt);
+            let _ = ClientToScreen(self.toolbar.bar_of(id), &mut pt);
         }
         pt
     }

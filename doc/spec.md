@@ -82,6 +82,7 @@ tabex/
 │   │   ├── listview.rs      # LVS_OWNERDATA virtual list helpers
 │   │   ├── navtree.rs
 │   │   ├── workspace_dialog.rs # workspace list popup, name prompt
+│   │   ├── settings_dialog.rs # settings dialog (4 pages), home entry dialog, key capture
 │   │   ├── accel.rs         # key -> Command mapping
 │   │   ├── format.rs        # size/date/attribute formatting
 │   │   ├── dpi.rs
@@ -94,6 +95,7 @@ tabex/
 │       ├── workspaces.rs    # workspace save/switch/rename/delete
 │       ├── menu.rs          # popup menus (no menu bar)
 │       ├── toolbar.rs       # toolbar commands, dropdown, tooltips, state sync
+│       ├── settings.rs      # applying user settings, watching and reloading config.toml
 │       ├── tree.rs          # navigation tree notifications
 │       └── worker.rs        # thread pools and UI wake-up
 ├── tests/                   # integration tests (Windows only)
@@ -206,6 +208,7 @@ pub enum Command {
     Open, OpenInNewTab, Rename, NewFolder, Delete { permanent: bool },
     Copy, Cut, Paste, Undo, SelectAll, Properties,
     GoHome,  // primary home directory (§7.12)
+    OpenSettings, // settings dialog (§7.13)
     SetViewMode(ViewMode), SortBy(ColumnId), ToggleHidden, ToggleDotfiles, ToggleExtensions,
     WorkspaceList, WorkspaceNew { from_current: bool },
     WorkspaceRename(String), WorkspaceDelete(String), WorkspaceSwitch(String),
@@ -757,7 +760,7 @@ pub fn launch(kind: &ShellKind, dir: &str) -> Result<(), String>
 #### ボタンの定義（`model::toolbar`、純粋関数）
 
 ```rust
-pub enum ButtonId { Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh }
+pub enum ButtonId { Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh, Settings }
 pub enum ButtonKind { Push, Check, Dropdown }
 pub enum Glyph { Icon(char), Text(&'static str) }
 
@@ -782,7 +785,7 @@ pub struct ToolbarState {
     pub dual: bool,
 }
 
-pub const BUTTONS: [ButtonDef; 9];                  // left to right
+pub const BUTTONS: [ButtonDef; 10];                 // left to right; `end` ones go to the right end
 pub const VIEW_MODES: [(ViewMode, &str, Glyph); 5]; // dropdown order: large, medium, small, list, details
 pub fn checked(id: ButtonId, st: &ToolbarState) -> bool;
 pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool;  // false only for Undo without history
@@ -803,6 +806,9 @@ pub fn view_mode_index(mode: ViewMode) -> usize;          // position in VIEW_MO
 | `NavTree` | Check | ナビゲーション ウィンドウ | `ToggleNavTree` | 4 | U+E90C（左側のパネル） |
 | `Layout` | Check | 2 ペイン表示 | `ToggleLayout` | 4 | U+F57C（左右に 2 分割） |
 | `Refresh` | Push | 最新の情報に更新 | `Refresh` | 5 | U+E72C（Refresh） |
+| `Settings` | Push（右端） | 設定 | `OpenSettings` | 6 | U+E713（歯車。実装時に両フォントで確認する） |
+
+- `ButtonDef` に `end: bool` を足す。`true` のボタン（`Settings` だけ）は、右端用の 2 つ目のツールバー（下記「右端のボタン」）に置く。
 
 - `VIEW_MODES` のグリフは、大アイコン U+EB9F（画像）、中アイコン U+F0E2（2×2）、小アイコン U+E80A（3×3）、一覧 U+E8FD、詳細 U+E71D とする。
 - グリフは、Segoe MDL2 Assets（Windows 10）と Segoe Fluent Icons（Windows 11）の両方で同じ番号に同じ意味の絵があるものを、両フォントの描画を見比べて選んだ。番号は `model::toolbar` の 1 か所にだけ書く。ドットファイルと拡張子にはふさわしい絵がないので、`Glyph::Text` で短い文字を描く。
@@ -860,6 +866,9 @@ impl Toolbar {
   - `TBN_DROPDOWN` を受けたら、`button_rect(ViewMode)` の左下を画面座標に直し、`MenuState::track` で `VIEW_MODES` の 5 項目を出す。
   - 各項目の文字は「名前\tキー」とする。キーは `key_for(SetViewMode(m))` を `format_key` で表記したもの。今のモードには印を付ける。
   - 項目が選ばれたら `SetViewMode(m)` を `execute` し、通知には `TBDDRET_DEFAULT` を返す。
+- 右端のボタン: `ToolbarWindow32` にはボタンを右寄せする機能がないため、`end` のボタンだけを載せた 2 つ目のツールバー（`Toolbar::end_hwnd`）を作る。スタイル・イメージリスト・ボタンの大きさは 1 つ目と同じにし、`WM_COMMAND`・`TTN_GETDISPINFOW` も同じ処理で扱う（`button_of` はコマンド ID だけで判断するので、どちらのツールバーかは区別しない）。
+  - 配置は `model::layout::split_toolbar(toolbar: Rect, main_width: i32, end_width: i32) -> (Rect, Rect)` で決める。2 つ目は `toolbar.right - end_width` から右端までとし、1 つ目はその左までとする。ただし 1 つ目のボタンが収まらないほど狭いとき（`toolbar.left + main_width` より左になるとき）は、2 つ目を 1 つ目のボタンの直後（`toolbar.left + main_width`）に置く（要求仕様 §3.1）。
+  - `main_width` は 1 つ目のツールバーの最後のボタンの右端（`TB_GETITEMRECT`）、`end_width` は 2 つ目のボタンの幅とし、`Toolbar::place(rect: Rect)` が計算して 2 つを `SetWindowPos` する。`App::layout` は `ui::place(toolbar.hwnd, ...)` の代わりに `toolbar.place(r.toolbar)` を呼ぶ。
 - ホームの右クリック: ツールバーは、ボタンの上で右クリックされると `NM_RCLICK`（`NMMOUSE`、`dwItemSpec` がボタンのコマンド ID）を親に送る。`hwndFrom` がツールバーで、`Toolbar::button_of(dwItemSpec)` が `Home` なら `home_menu()`（§7.12）を出して 1 を返す（既定の処理と `WM_CONTEXTMENU` を止める）。ほかのボタンの右クリックでは何もしない。
 - ツールチップ: `WM_NOTIFY` の `TTN_GETDISPINFOW` で、`idFrom` がツールバーのボタンのときに処理する。
   - `tooltip(label, key_for(command).map(format_key))` の結果を `Toolbar::set_tip` に入れ、その文字列を `lpszText` に渡す。
@@ -1005,7 +1014,7 @@ pub fn menu_label(h: &Home) -> String;                 // "仕事\tD:\work" / "D
 
 #### App への組み込み
 
-- `App` に `homes: Vec<model::homes::Home>` を持たせる。`App::new` で `resolve(config.homes の (name, path), shell::names::expand_env, &home)` を呼んで作る。警告はキー割り当ての警告とまとめて、起動時にステータスバーへ表示する。設定は起動時にだけ読む（要求仕様 §3.3）。
+- `App` に `homes: Vec<model::homes::Home>` を持たせる。`App::new` で `resolve(config.homes の (name, path), shell::names::expand_env, &home)` を呼んで作る。警告はキー割り当ての警告とまとめて、起動時にステータスバーへ表示する。設定ダイアログでの変更や外での編集のときは、`apply_user_settings`（§7.13）が作り直す。
 - `Command::GoHome` を追加する。`[keys]` で使う名前は `GoHome`、既定のキーは `Alt+Home` とする。`is_list_command` には含めない（どこにフォーカスがあっても効く。Alt を含むので Edit の入力も横取りしない）。
 - `App::go_home_to(&mut self, loc: &Location)`: ホームディレクトリへの移動。
   1. `shell::names::resolve(loc.as_str()).unwrap_or(loc.clone())` で正規化する（ナビゲーションツリーやアドレスバーからの移動と同じ）。存在しないフォルダは `resolve` に失敗するので、書かれたパスのまま移動し、既存の「フォルダが見つかりません」の表示になる。
@@ -1016,6 +1025,154 @@ pub fn menu_label(h: &Home) -> String;                 // "仕事\tD:\work" / "D
   - `button_rect(Home)` の左下を画面座標に直し、`MenuState::track` で `homes` の各項目を `menu_label` の文字で出す。アクティブなタブの場所と `same_place` の項目に印を付ける。
   - 項目のコマンドには `Command::Navigate(home.location)` を入れておき、選ばれたら（`Navigate` をそのまま実行せず）その場所で `go_home_to` を呼ぶ。メニューを閉じただけなら何もしない。
   - 印のための比較は設定に書かれたパスで行い、`resolve` は呼ばない（ネットワーク上のパスでメニューを開くのが遅くならないように）。
+
+### 7.13 設定ダイアログ（`ui::settings_dialog`、`app::settings`）
+
+要求仕様 §3.4。
+
+#### ユーザー設定（`store::config`、純粋）
+
+ダイアログで扱う項目と、外での編集で読み直す項目（要求仕様 §3.5）は同じなので、1 つの型にまとめる。
+
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserSettings {
+    pub show_hidden: bool,
+    pub show_dotfiles: bool,
+    pub show_extensions: bool,
+    pub nav_tree_visible: bool,
+    pub homes: Vec<HomeSpec>,
+    pub keys: BTreeMap<String, String>, // [keys] overrides as written
+    pub shell: Option<String>,
+    pub migemo: bool,
+}
+impl Config {
+    pub fn user_settings(&self) -> UserSettings;
+    /// Replace the user settings; window placement, workspaces and the like are kept.
+    pub fn set_user_settings(&mut self, u: UserSettings);
+}
+```
+
+#### 反映（`app::settings`）
+
+```rust
+impl App {
+    /// Make `u` the current settings and apply every difference right away.
+    pub fn apply_user_settings(&mut self, u: UserSettings);
+    pub fn set_nav_tree_visible(&mut self, visible: bool); // shared with ToggleNavTree
+}
+```
+
+- `apply_user_settings` は今の `config.user_settings()` と比べ、違う項目だけを次のように反映してから `config.set_user_settings(u)` する（順序は、比較 → `config` の更新 → 反映）。
+  - 隠しファイル・ドットファイル: どちらかが変わったら `apply_filter_change` を 1 回だけ呼ぶ（一覧の絞り込みとツリーの作り直し）。メッセージは「設定を反映しました」。
+  - 拡張子: 一覧を再描画する（`ToggleExtensions` と同じ）。
+  - ナビゲーション ウィンドウ: `set_nav_tree_visible`（`ToggleNavTree` の処理を切り出したもの。隠すときにフォーカスがツリーにあれば一覧へ移す）。
+  - キー割り当て: `KeyMap::new(&keys)` で作り直す。ツールチップは通知のたびに作るので、そのまま新しいキーになる。
+  - ホームディレクトリ: `model::homes::resolve` で `App::homes` を作り直す。
+  - シェル: `config.shell` を変えるだけ（次の `:sh` から使われる）。
+  - migemo: `false` になったら `MigemoState::Off`、`true` になったら（`Ready` でなければ）`MigemoState::NotLoaded` にして、次の `/` で読み込ませる。
+  - キー割り当てとホームディレクトリの警告は、まとめてステータスバーに表示する。
+  - 最後に `sync_toolbar` する。
+- `apply_user_settings` は保存しない。保存するかどうかは呼び出し側が決める（ダイアログの OK・適用は保存する。外での編集の読み直しは保存しない）。
+
+#### ダイアログの作り（`ui::settings_dialog`）
+
+```rust
+/// Modal; returns after the dialog is closed.
+pub fn show(app: &mut App);
+```
+
+- 既存の `workspace_dialog::prompt` と同じく、独自のウィンドウクラス（`TabexSettings`）のポップアップに、コモンコントロールを `CreateWindowExW` で直接並べる（ダイアログリソースは使わない）。モーダルは、メインウィンドウを `EnableWindow(false)` にして、ダイアログの中で `GetMessageW` / `IsDialogMessageW` のループを回すことで実現する。閉じたら `EnableWindow(true)` に戻して前面に戻す。
+- 大きさは 96 DPI で 560×480 を `scale` した大きさとし、メインウィンドウの中央に置く。フォントは `App::font`。
+- 上部に `WC_TABCONTROLW`（ページの見出し）、その下にページの部品、下端に「OK」（`IDOK`、`BS_DEFPUSHBUTTON`）「キャンセル」（`IDCANCEL`）「適用」を置く。ページの部品はすべてダイアログの子として作り、ページを切り替えたら（`TCN_SELCHANGE`）そのページの部品だけを `ShowWindow` で表示する。`IsDialogMessageW` が Enter を `IDOK`、Esc を `IDCANCEL` の `WM_COMMAND` にしてくれる。
+- 編集中の値はダイアログの状態（`SettingsState`、`thread_local`）に `UserSettings` の作業用コピーと、キー割り当ての作業用の表（下記 `KeyTable`）として持つ。部品の変更（`BN_CLICKED`・`EN_CHANGE`・一覧の操作）のたびに作業用コピーを更新し、開いたときの値または最後に適用した値と違えば「適用」を有効にする。
+  - 状態は `with(|s| ...)` で借りて使う。一覧を埋めるなど、状態を借りたまま部品にメッセージを送ると、部品が同期的に通知（`LVN_ITEMCHANGED` など）を返してきて、通知の処理がもう一度状態を借りようとする。`with` は `try_borrow_mut` で借り、借りられなければ何もしない（そのような通知は、プログラムから部品を埋めている最中のものなので無視してよい）。
+  - 確認のメッセージボックスや項目の編集ダイアログのように、メッセージを回す処理は、状態を借りていない間に呼ぶ。
+- OK・適用: 作業用コピーを `app.apply_user_settings(copy)` してから `app.save_config()` する。OK はそのあと閉じる。適用したことを `SettingsState::applied` に記録する。
+- 最後に表示していたページの番号は `App::settings_page`（起動中だけ覚える）に入れる。ページを切り替えるたびに状態の `page` に記録しておき、閉じたあとでそれを使う（閉じたあとはタブコントロールが破棄されていて、`TCM_GETCURSEL` では読めない）。
+
+##### 表示ページ
+
+- `BS_AUTOCHECKBOX` を 4 つ並べる。
+
+##### ホームディレクトリページ
+
+- `LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS` の ListView（列: 名前・パス）と、「追加」「編集」「削除」「上へ」「下へ」のボタン、一覧の下に注記の Static（「一覧が空のときは、ユーザーフォルダがホームディレクトリになります。」）を置く。
+- 先頭の行の名前の列には「（プライマリ）」を添える（名前があれば「仕事（プライマリ）」、なければ「（プライマリ）」）。作業用コピーの `HomeSpec` には添えない。
+- 選択に応じてボタンを有効・無効にする（要求仕様 §3.4）。`NM_DBLCLK` は編集、`LVN_KEYDOWN` の Delete は削除とする。
+- 項目の編集ダイアログ: `home_entry(owner, initial: &HomeSpec) -> Option<HomeSpec>`。`prompt` と同じ作りの小さなモーダルで、「名前」「パス」の Edit と「参照...」ボタン、エラー表示用の Static、OK・キャンセルを置く。
+  - 「参照...」: `IFileOpenDialog` に `FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM` を付けて開き、選んだフォルダのパス（`SIGDN_FILESYSPATH`）をパスの欄に入れる。
+  - OK: パスを `shell::names::expand_env` で展開して `model::homes::is_absolute` で調べ、空または絶対パスでなければ「パスには絶対パスを指定してください」と表示して閉じない。名前とパスは前後の空白を除き、名前が空なら `None` にする。パスは書いたまま（環境変数を展開しないまま）保存する。
+
+##### キー割り当てページ
+
+- `LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS` の ListView（列: コマンド・キー）を 2 つ使う。上はコマンドの一覧、下は選んだコマンドのキーの一覧（1 キー 1 行。削除するキーを選ぶため）。
+- 下の一覧の横に、キーの入力欄（下記）・「割り当て」・「削除」・「既定に戻す」ボタン、ページの下端に「すべて既定に戻す」ボタンと注記（「: のように文字で割り当てるキーは、config.toml で変更します。」）を置く。
+- 既定から変えたコマンドの行は、`NM_CUSTOMDRAW`（`CDDS_ITEMPREPAINT | CDDS_SUBITEM`）でキーの列を太字のフォントにする。
+- コマンドの一覧（`model::command::CATALOG`）:
+
+  ```rust
+  pub enum Category { Tab, Move, File, View, Workspace, Other }
+  pub struct CommandInfo { pub name: &'static str, pub label: &'static str, pub category: Category }
+  /// Every command `from_name` accepts, in display order (by category).
+  pub const CATALOG: &[CommandInfo];
+  pub fn name_of(cmd: &Command) -> Option<&'static str>; // reverse of from_name over CATALOG
+  ```
+
+  - `name` は `from_name` が受け付ける名前（`WorkspaceSaveAs` のような互換の別名は除く）、`label` は日本語の名前（例: `NewTab` →「新しいタブ」、`SelectTab3` →「タブ 3 を選ぶ」）。
+- キーの作業用の表（`ui::accel`、純粋）:
+
+  ```rust
+  /// Effective key bindings while editing: (key, command name), in KeyMap order.
+  pub struct KeyTable { pub bindings: Vec<(KeySpec, &'static str)> }
+  impl KeyTable {
+      pub fn from_overrides(overrides: &BTreeMap<String, String>) -> KeyTable; // defaults + overrides
+      pub fn keys_of(&self, name: &str) -> Vec<KeySpec>;
+      pub fn owner_of(&self, key: &KeySpec) -> Option<&'static str>;
+      /// Bind `key` to `name`; returns the command it was taken from, if any.
+      pub fn assign(&mut self, key: KeySpec, name: &'static str) -> Option<&'static str>;
+      pub fn remove(&mut self, key: &KeySpec);
+      pub fn reset(&mut self, name: &str);   // the command's default keys only
+      pub fn reset_all(&mut self);
+      pub fn is_default(&self, name: &str) -> bool;
+      /// `[keys]` that reproduce this table: "None" for removed defaults, names for the rest.
+      /// Character entries such as ":" in `keep` are carried over unchanged.
+      pub fn to_overrides(&self, keep: &BTreeMap<String, String>) -> BTreeMap<String, String>;
+  }
+  ```
+
+  - `from_overrides` は `KeyMap::new` と同じ手順（既定の表に上書きを重ねる）で作る。名前の分からない上書き（`from_name` が `None`）は表に入れない（`KeyMap::new` でも警告になって無視されるもの）。
+  - `assign` で、そのキーをすでに持つコマンドがあれば `owner_of` で分かるので、ダイアログは割り当てる前に `MessageBoxW(MB_YESNO)` で確認する（要求仕様 §3.4 の文言）。
+  - `reset` は、そのコマンドの既定のキーを戻す。戻すキーをほかのコマンドが使っていれば、そのコマンドから外す。
+  - `to_overrides` の結果を `KeyMap::new` に渡すと、表と同じ割り当てになること（往復）を単体テストで確かめる。
+- キーの入力欄: 読み取り専用の Edit をサブクラス化し、`WM_KEYDOWN` / `WM_SYSKEYDOWN` で押されたキーを `KeySpec` にして `format_key` を表示する。
+  - Alt は `GetKeyState(VK_MENU)` に加えて、`WM_SYSKEYDOWN` の lParam の bit 29（Alt を押している間に立つ）でも判定する。キーボードをフックする常駐ソフト（AutoHotkey のスクリプトなど）が Alt+英字を書き換える環境では、Alt+英字が「英字」だけとして届くことがある（tabex の外の動きなので対象外）。
+  - Ctrl・Alt・Shift だけを押したときは何もしない。`format_key` が `0x..` の形になるキー（`parse_key` で書き戻せないキー）は受け付けない。
+  - Tab・Esc・Enter は、修飾キーなしならダイアログの操作に回す。モーダルループでは、フォーカスがこの欄にあり、押されたのが「修飾キーなしの Tab・Esc・Enter」以外のキーなら、`IsDialogMessageW` を通さずにこの欄へ送る（Alt+英字がアクセスキーとして解釈されないように）。
+
+##### その他ページ
+
+- 「シェル」の Edit と注記（「空欄のときは Windows Terminal → PowerShell 7 → Windows PowerShell → コマンドプロンプトの順に探します。」）、「migemo を使う」の `BS_AUTOCHECKBOX` と注記（「tabex.exe と同じフォルダに rustmigemo.dll と辞書があるときに使われます。」）を置く。シェルの欄が空なら `shell` は `None` にする。
+
+#### 開きかた
+
+- `Command::OpenSettings` を追加する。`[keys]` で使う名前は `OpenSettings`、既定のキーはない。実行すると `settings_dialog::show(self)`。
+- ツールバーの `Settings` ボタンは `OpenSettings` を実行する。
+
+### 7.14 設定ファイルの監視と読み直し（`app::settings`）
+
+要求仕様 §3.5。
+
+- 監視: `App::new` のあとで、既存の `Watcher` に `CONFIG_WATCH_KEY`（`u64::MAX`。タブの ID とは重ならない）で `config.toml` のあるフォルダ（`TABEX_HOME` または `%APPDATA%\tabex`）を登録する。
+  - `on_watch` で `key == CONFIG_WATCH_KEY` のイベントは `on_config_watch` に回す。名前が `config.toml`（大文字小文字を無視）の `Upsert` / `Removed`、または `Overflow` なら、`TIMER_CONFIG_RELOAD` を 300ms で（すでにあれば張り直して）セットする。`Failed` なら、ステータスバーに「設定ファイルの変更を監視できません」と 1 度だけ表示して監視をやめる。
+- 自分で書いた変更の除外: `save_config` は書き込んだ TOML の文字列を `App::config_written` に覚えておく。読み直すときにファイルの内容がこれと同じなら何もしない。
+- 読み直し（`TIMER_CONFIG_RELOAD` で `reload_config()`）:
+  1. 設定ダイアログを開いているなら `config_reload_pending = true` にして終わる。
+  2. ファイルを読む。ないときは何もしない（削除されただけなら、次に tabex が保存したときに作り直される）。内容が `config_written` と同じなら何もしない。
+  3. `config::from_toml` で読む。失敗したら、ステータスバーに「設定ファイルを読み込めませんでした: (理由)」と表示して終わる（今の設定のまま）。
+  4. 成功したら `config_written` に読んだ内容を入れて（同じ内容で何度も反映しないため）、`apply_user_settings(new.user_settings())` する。保存はしない。ウィンドウの位置・最近使ったワークスペースなど、tabex が管理する項目は `new` から取らない。
+- ダイアログを閉じたあと: `config_reload_pending` なら下ろして、ダイアログで 1 度も適用していなければ `reload_config()` する。適用していれば、ダイアログの内容で保存済みなので読み直さない（要求仕様 §3.5）。
+- tabex が保存するとき（`save_config`）は、メモリ上の `config` を書く。外での編集は読み直しの時点で `config` に入っているので、消えない。読み直しの前（300ms の待ちの間）に tabex が保存すると外の編集が上書きされうるが、その間に保存が起きるのはワークスペースの切り替えや終了の操作をした場合だけであり、許容する。
 
 ## 8. 起動、単一インスタンス、コマンドライン
 
@@ -1126,9 +1283,9 @@ strip = true
 | `model::history` | 戻る・進むの動き。新しく移動したら進む用の履歴が消えること。上限の 100 件 |
 | `model::listing` | チャンクをマージした結果が、全件を一度にソートした結果と一致すること。差分の挿入・削除。隠しファイルとドットファイルの絞り込み（片方だけ、両方）。ソート順を変えたあとの選択状態の付け直し。`cursor_step` の上下移動・端で止まること・フォーカスがないとき・範囲選択（アンカーの上下を行き来する場合を含む）・0 件のとき。絞り込み（`name_matches` の大小無視・拡張子を含むこと・日本語、`set_query` での絞り込みと解除、隠しファイル設定との組み合わせ、追加・名前変更・削除への追従、隠れた項目が選択から外れること、`total_len`） |
 | `model::narrow` | `Pattern::parse`: 文字・エスケープ・文字クラス（中のエスケープを含む）・入れ子のグループ・連結したグループ、閉じていない括弧や末尾の `\` がエラーになること。`is_match`: 名前の途中での一致、大小無視、`kaisha` の実際のパターンで「会社案内.pdf」「かいしゃ」「カイシャ」に一致し「会議」に一致しないこと、先頭の文字の索引で枝を取りこぼさないこと（同じ先頭文字の枝が複数・クラスで始まる枝・グループで始まる枝）。`Query::matches`: パターンがあっても部分一致の項目が一致すること、パターンなしのとき部分一致だけになること、`PartialEq` |
-| `model::layout` | ツールバーが上端に幅いっぱいで置かれ、ナビゲーションツリーとペインがその下から始まること（DPI 150% では高さ 48px）。絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
+| `model::layout` | `split_toolbar`（広いときは右端、狭いときは 1 つ目のボタンの直後）。ツールバーが上端に幅いっぱいで置かれ、ナビゲーションツリーとペインがその下から始まること（DPI 150% では高さ 48px）。絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
-| `store::config` | 既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version、`[[homes]]` の読み込みと往復（`path` のない項目があってもファイル全体は読めること、`homes` が空なら書き出さないこと） |
+| `store::config` | `user_settings` / `set_user_settings`（ダイアログで扱う項目だけが入れ替わり、ウィンドウ位置・最近使ったワークスペースが残ること）、既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version、`[[homes]]` の読み込みと往復（`path` のない項目があってもファイル全体は読めること、`homes` が空なら書き出さないこと） |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
 | `store::autosave` | 時刻を差し替えて、1 秒間変更がなかったときだけ保存すること。すぐ保存すべき場面（切替時など）で保存すること |
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
@@ -1139,6 +1296,8 @@ strip = true
 | `model::homes` | `resolve`（順序の保持、名前の省略と空白だけの名前、`path` の欠落・空・相対パスが警告になり番号が正しいこと、環境変数の展開、末尾の `\` の除去とドライブのルートの維持、使える項目が 0 件のとき `fallback` だけになること）、`is_absolute`（ドライブ・UNC・相対・`shell:`）、`same_place`（大小文字・末尾の `\`）、`menu_label`（名前あり・なし・`&` を含む名前） |
 | `model::toolbar` | ボタンの並びと区切り（要求仕様 §3.1 の表の順）、各ボタンの `command`、`checked` / `enabled` が `ToolbarState` に従うこと（元に戻すの履歴がないときだけ無効になること）、`ViewMode` のグリフが表示モードに従うこと、`tooltip` のキーありとキーなし |
 | `model::command` | `from_name("WorkspaceSaveAs")` が `WorkspaceNew { from_current: true }` になること |
+| `ui::accel`（`KeyTable`） | `from_overrides` が `KeyMap::new` と同じ割り当てになること、`assign`（空いているキー・ほかのコマンドから奪うキー）、`remove`、`reset`（ほかのコマンドが使っている既定のキーを取り戻す）、`reset_all`、`is_default`、`to_overrides` の往復（`KeyMap::new(to_overrides(..))` が表と同じ）と最小性（変更がなければ空）、文字の割り当て（`":"`）の引き継ぎ |
+| `model::command`（`CATALOG`） | すべての名前が `from_name` で読めること、名前の重複がないこと、既定のキー割り当てに使われているコマンドがすべて `name_of` で引けること、`OpenSettings` |
 | `ui::accel` | `Alt+Home` の既定の割り当てが `GoHome` であること、`format_key` と `parse_key` の往復（修飾キーの順・名前付きキー・F キー）、`key_for` が既定の割り当てを先に返すことと、`None` で外したときに次の割り当てを返すこと、キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |

@@ -141,6 +141,15 @@ fn pane_rects(r: Rect, dpi: u32, filter_bar: bool) -> PaneRects {
     }
 }
 
+/// Main toolbar and the right-end toolbar inside `toolbar`. The end one sits at the right
+/// end, or right after the main buttons (`main_width`) when the window is too narrow.
+pub fn split_toolbar(toolbar: Rect, main_width: i32, end_width: i32) -> (Rect, Rect) {
+    let end_left = (toolbar.right - end_width).max(toolbar.left + main_width);
+    let main = Rect::new(toolbar.left, toolbar.top, end_left, toolbar.bottom);
+    let end = Rect::new(end_left, toolbar.top, end_left + end_width, toolbar.bottom);
+    (main, end)
+}
+
 /// New split ratio when the pane splitter is dragged to client x coordinate `x`.
 pub fn ratio_from_drag(client: Rect, dpi: u32, st: &LayoutState, x: i32) -> f32 {
     let rects = compute(
@@ -206,6 +215,18 @@ mod tests {
         let r = compute(Rect::new(0, 0, 3000, 1500), 144, &st(Layout::Single, false));
         assert_eq!(r.toolbar.height(), 48);
         assert_eq!(r.panes[1].unwrap().whole.top, 48);
+    }
+
+    #[test]
+    fn end_toolbar_at_right_or_after_main() {
+        let bar = Rect::new(0, 0, 1000, 32);
+        let (main, end) = split_toolbar(bar, 400, 40);
+        assert_eq!(end, Rect::new(960, 0, 1000, 32));
+        assert_eq!(main, Rect::new(0, 0, 960, 32));
+        // Too narrow: right after the main buttons, possibly past the right edge.
+        let (main, end) = split_toolbar(Rect::new(0, 0, 420, 32), 400, 40);
+        assert_eq!(main, Rect::new(0, 0, 400, 32));
+        assert_eq!(end, Rect::new(400, 0, 440, 32));
     }
 
     #[test]

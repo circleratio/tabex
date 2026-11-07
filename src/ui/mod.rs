@@ -7,6 +7,7 @@ pub mod filterbar;
 pub mod format;
 pub mod listview;
 pub mod navtree;
+pub mod settings_dialog;
 pub mod tabbar;
 pub mod theme;
 pub mod toolbar;

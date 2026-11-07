@@ -14,6 +14,7 @@ pub enum ButtonId {
     NavTree,
     Layout,
     Refresh,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +43,8 @@ pub struct ButtonDef {
     pub group: u8,
     /// Image for every button but ViewMode, whose image follows the view mode.
     pub glyph: Glyph,
+    /// Placed at the right end of the toolbar instead of after the previous button.
+    pub end: bool,
 }
 
 /// Snapshot of everything the toolbar shows.
@@ -57,7 +60,7 @@ pub struct ToolbarState {
 }
 
 /// Left to right.
-pub const BUTTONS: [ButtonDef; 9] = [
+pub const BUTTONS: [ButtonDef; 10] = [
     ButtonDef {
         id: ButtonId::Home,
         kind: ButtonKind::Push,
@@ -65,6 +68,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::GoHome),
         group: 0,
         glyph: Glyph::Icon('\u{E80F}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Undo,
@@ -73,6 +77,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::Undo),
         group: 1,
         glyph: Glyph::Icon('\u{E7A7}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::ViewMode,
@@ -81,6 +86,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: None,
         group: 2,
         glyph: Glyph::Icon('\u{E71D}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Hidden,
@@ -89,6 +95,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::ToggleHidden),
         group: 3,
         glyph: Glyph::Icon('\u{E7B3}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Dotfiles,
@@ -97,6 +104,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::ToggleDotfiles),
         group: 3,
         glyph: Glyph::Text(".*"),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Extensions,
@@ -105,6 +113,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::ToggleExtensions),
         group: 3,
         glyph: Glyph::Text(".ext"),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::NavTree,
@@ -113,6 +122,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::ToggleNavTree),
         group: 4,
         glyph: Glyph::Icon('\u{E90C}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Layout,
@@ -121,6 +131,7 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::ToggleLayout),
         group: 4,
         glyph: Glyph::Icon('\u{F57C}'),
+        end: false,
     },
     ButtonDef {
         id: ButtonId::Refresh,
@@ -129,6 +140,16 @@ pub const BUTTONS: [ButtonDef; 9] = [
         command: Some(Command::Refresh),
         group: 5,
         glyph: Glyph::Icon('\u{E72C}'),
+        end: false,
+    },
+    ButtonDef {
+        id: ButtonId::Settings,
+        kind: ButtonKind::Push,
+        label: "設定",
+        command: Some(Command::OpenSettings),
+        group: 6,
+        glyph: Glyph::Icon('\u{E713}'),
+        end: true,
     },
 ];
 
@@ -159,7 +180,7 @@ pub fn checked(id: ButtonId, st: &ToolbarState) -> bool {
         ButtonId::Extensions => st.show_extensions,
         ButtonId::NavTree => st.nav_visible,
         ButtonId::Layout => st.dual,
-        ButtonId::Home | ButtonId::Undo | ButtonId::ViewMode | ButtonId::Refresh => false,
+        ButtonId::Home | ButtonId::Undo | ButtonId::ViewMode | ButtonId::Refresh | ButtonId::Settings => false,
     }
 }
 
@@ -205,11 +226,14 @@ mod tests {
         assert_eq!(
             ids,
             [
-                Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh
+                Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh, Settings
             ]
         );
         let groups: Vec<u8> = BUTTONS.iter().map(|b| b.group).collect();
-        assert_eq!(groups, [0, 1, 2, 3, 3, 3, 4, 4, 5]);
+        assert_eq!(groups, [0, 1, 2, 3, 3, 3, 4, 4, 5, 6]);
+        let ends: Vec<ButtonId> = BUTTONS.iter().filter(|b| b.end).map(|b| b.id).collect();
+        assert_eq!(ends, [Settings]);
+        assert_eq!(def(Settings).command, Some(Command::OpenSettings));
         assert_eq!(def(Home).command, Some(Command::GoHome));
         assert_eq!(def(Undo).command, Some(Command::Undo));
         assert_eq!(def(ViewMode).command, None);
@@ -223,7 +247,7 @@ mod tests {
         for id in [Hidden, Dotfiles, Extensions, NavTree, Layout] {
             assert_eq!(def(id).kind, ButtonKind::Check);
         }
-        for id in [Home, Undo, Refresh] {
+        for id in [Home, Undo, Refresh, Settings] {
             assert_eq!(def(id).kind, ButtonKind::Push);
         }
     }

@@ -33,7 +33,11 @@ impl App {
     pub fn save_config(&mut self) {
         self.config.touch_recent(&self.ws.name.clone());
         match config::save(&paths::config_path(&self.base), &self.config) {
-            Ok(()) => self.config_dirty = false,
+            Ok(()) => {
+                self.config_dirty = false;
+                // The watcher will report this write; remember it so it is not reloaded.
+                self.config_written = toml::to_string(&self.config).ok();
+            }
             Err(e) => self.show_status(&format!("設定を保存できませんでした: {e}")),
         }
     }

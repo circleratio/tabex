@@ -19,6 +19,9 @@ const BUTTON_SIZE: i32 = 28;
 
 pub struct Toolbar {
     pub hwnd: HWND,
+    /// Second toolbar at the right end for the `end` buttons (ToolbarWindow32 cannot
+    /// right-align buttons).
+    pub end_hwnd: HWND,
     images: HIMAGELIST,
     disabled: HIMAGELIST,
     dpi: u32,
@@ -182,29 +185,69 @@ fn image_list(size: i32, color: COLORREF) -> HIMAGELIST {
     }
 }
 
-impl Toolbar {
-    pub fn create(parent: HWND, id: i32, dpi: u32) -> Result<Toolbar> {
-        let style =
-            TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_NODIVIDER as u32 | CCS_NOPARENTALIGN as u32 | CCS_NORESIZE as u32;
-        let hwnd = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                TOOLBARCLASSNAMEW,
-                PCWSTR::null(),
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
-                0,
-                0,
-                0,
-                0,
-                Some(parent),
-                Some(HMENU(id as usize as *mut _)),
-                None,
-                None,
-            )?
+/// One ToolbarWindow32 holding the buttons with `end == at_end`.
+fn create_bar(parent: HWND, id: i32, at_end: bool) -> Result<HWND> {
+    let style = TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_NODIVIDER as u32 | CCS_NOPARENTALIGN as u32 | CCS_NORESIZE as u32;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            TOOLBARCLASSNAMEW,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
+            0,
+            0,
+            0,
+            0,
+            Some(parent),
+            Some(HMENU(id as usize as *mut _)),
+            None,
+            None,
+        )?
+    };
+    send(hwnd, TB_BUTTONSTRUCTSIZE, std::mem::size_of::<TBBUTTON>(), 0);
+    let mut buttons = Vec::new();
+    let mut prev_group = None;
+    for (i, b) in BUTTONS.iter().enumerate().filter(|(_, b)| b.end == at_end) {
+        if prev_group.is_some_and(|g| g != b.group) {
+            buttons.push(TBBUTTON {
+                fsStyle: BTNS_SEP as u8,
+                ..Default::default()
+            });
+        }
+        prev_group = Some(b.group);
+        let style = match b.kind {
+            ButtonKind::Push => BTNS_BUTTON,
+            ButtonKind::Check => BTNS_CHECK,
+            ButtonKind::Dropdown => BTNS_WHOLEDROPDOWN,
         };
-        send(hwnd, TB_BUTTONSTRUCTSIZE, std::mem::size_of::<TBBUTTON>(), 0);
+        buttons.push(TBBUTTON {
+            iBitmap: i as i32,
+            idCommand: TOOLBAR_BASE + i as i32,
+            fsState: TBSTATE_ENABLED as u8,
+            fsStyle: style as u8,
+            ..Default::default()
+        });
+    }
+    send(hwnd, TB_ADDBUTTONSW, buttons.len(), buttons.as_ptr() as isize);
+    Ok(hwnd)
+}
+
+/// Right edge of the last button, i.e. the width the buttons need.
+fn buttons_width(bar: HWND) -> i32 {
+    let n = send(bar, TB_BUTTONCOUNT, 0, 0).0 as usize;
+    if n == 0 {
+        return 0;
+    }
+    let mut rc = RECT::default();
+    send(bar, TB_GETITEMRECT, n - 1, &mut rc as *mut RECT as isize);
+    rc.right
+}
+
+impl Toolbar {
+    pub fn create(parent: HWND, id: i32, end_id: i32, dpi: u32) -> Result<Toolbar> {
         let mut tb = Toolbar {
-            hwnd,
+            hwnd: create_bar(parent, id, false)?,
+            end_hwnd: create_bar(parent, end_id, true)?,
             images: HIMAGELIST::default(),
             disabled: HIMAGELIST::default(),
             dpi,
@@ -212,35 +255,40 @@ impl Toolbar {
             tip: Vec::new(),
         };
         tb.rebuild_images();
-        let mut buttons = Vec::new();
-        for (i, b) in BUTTONS.iter().enumerate() {
-            if i > 0 && BUTTONS[i - 1].group != b.group {
-                buttons.push(TBBUTTON {
-                    fsStyle: BTNS_SEP as u8,
-                    ..Default::default()
-                });
-            }
-            let style = match b.kind {
-                ButtonKind::Push => BTNS_BUTTON,
-                ButtonKind::Check => BTNS_CHECK,
-                ButtonKind::Dropdown => BTNS_WHOLEDROPDOWN,
-            };
-            buttons.push(TBBUTTON {
-                iBitmap: i as i32,
-                idCommand: TOOLBAR_BASE + i as i32,
-                fsState: TBSTATE_ENABLED as u8,
-                fsStyle: style as u8,
-                ..Default::default()
-            });
-        }
-        send(hwnd, TB_ADDBUTTONSW, buttons.len(), buttons.as_ptr() as isize);
         tb.set_button_size();
         Ok(tb)
     }
 
+    fn bars(&self) -> [HWND; 2] {
+        [self.hwnd, self.end_hwnd]
+    }
+
+    pub fn bar_of(&self, id: ButtonId) -> HWND {
+        if crate::model::toolbar::def(id).end {
+            self.end_hwnd
+        } else {
+            self.hwnd
+        }
+    }
+
+    /// True for either of the two toolbar windows.
+    pub fn owns(&self, hwnd: HWND) -> bool {
+        hwnd == self.hwnd || hwnd == self.end_hwnd
+    }
+
+    /// Place both toolbars in `rect`: the end one at the right end (see `split_toolbar`).
+    pub fn place(&self, rect: crate::model::layout::Rect) {
+        let (main, end) =
+            crate::model::layout::split_toolbar(rect, buttons_width(self.hwnd), buttons_width(self.end_hwnd));
+        super::place(self.hwnd, main, true);
+        super::place(self.end_hwnd, end, true);
+    }
+
     fn set_button_size(&self) {
         let s = scale(BUTTON_SIZE, self.dpi);
-        send(self.hwnd, TB_SETBUTTONSIZE, 0, makelong(s, s));
+        for bar in self.bars() {
+            send(bar, TB_SETBUTTONSIZE, 0, makelong(s, s));
+        }
     }
 
     pub fn set_dpi(&mut self, dpi: u32) {
@@ -255,8 +303,10 @@ impl Toolbar {
         let (normal, gray) = unsafe { (GetSysColor(COLOR_BTNTEXT), GetSysColor(COLOR_GRAYTEXT)) };
         let images = image_list(size, COLORREF(normal));
         let disabled = image_list(size, COLORREF(gray));
-        send(self.hwnd, TB_SETIMAGELIST, 0, images.0);
-        send(self.hwnd, TB_SETDISABLEDIMAGELIST, 0, disabled.0);
+        for bar in self.bars() {
+            send(bar, TB_SETIMAGELIST, 0, images.0);
+            send(bar, TB_SETDISABLEDIMAGELIST, 0, disabled.0);
+        }
         unsafe {
             if !self.images.is_invalid() {
                 let _ = ImageList_Destroy(Some(self.images));
@@ -277,12 +327,13 @@ impl Toolbar {
         }
         for b in &BUTTONS {
             let id = Self::button_id(b.id) as usize;
+            let bar = self.bar_of(b.id);
             if b.kind == ButtonKind::Check {
-                send(self.hwnd, TB_CHECKBUTTON, id, checked(b.id, st) as isize);
+                send(bar, TB_CHECKBUTTON, id, checked(b.id, st) as isize);
             }
-            send(self.hwnd, TB_ENABLEBUTTON, id, enabled(b.id, st) as isize);
+            send(bar, TB_ENABLEBUTTON, id, enabled(b.id, st) as isize);
             if b.id == ButtonId::ViewMode {
-                send(self.hwnd, TB_CHANGEBITMAP, id, view_mode_image(st) as isize);
+                send(bar, TB_CHANGEBITMAP, id, view_mode_image(st) as isize);
             }
         }
         self.last = Some(*st);
@@ -301,7 +352,7 @@ impl Toolbar {
     pub fn button_rect(&self, id: ButtonId) -> RECT {
         let mut rc = RECT::default();
         send(
-            self.hwnd,
+            self.bar_of(id),
             TB_GETRECT,
             Self::button_id(id) as usize,
             &mut rc as *mut RECT as isize,

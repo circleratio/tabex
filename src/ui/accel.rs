@@ -296,14 +296,210 @@ impl KeyMap {
         self.bindings.iter().find(|(_, c)| c == cmd).map(|(k, _)| k)
     }
 
+    /// Characters bound to `cmd` (such as ":" for the command line).
+    pub fn chars_of(&self, cmd: &Command) -> Vec<char> {
+        self.chars.iter().filter(|(_, c)| c == cmd).map(|(k, _)| *k).collect()
+    }
+
     pub fn lookup_char(&self, c: char) -> Option<&Command> {
         self.chars.iter().find(|(k, _)| *k == c).map(|(_, cmd)| cmd)
+    }
+}
+
+/// Effective key bindings while the settings dialog edits them: (key, command name) in
+/// `KeyMap` order, each key at most once. Character bindings such as ":" are not in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyTable {
+    pub bindings: Vec<(KeySpec, &'static str)>,
+}
+
+fn named_defaults() -> Vec<(KeySpec, &'static str)> {
+    default_bindings()
+        .into_iter()
+        .map(|(k, c)| {
+            let name = crate::model::command::name_of(&c).expect("every default command has a name");
+            (parse_key(k).expect("valid default key"), name)
+        })
+        .collect()
+}
+
+impl KeyTable {
+    /// Defaults plus `[keys]` overrides, the same way `KeyMap::new` combines them.
+    pub fn from_overrides(overrides: &BTreeMap<String, String>) -> KeyTable {
+        let mut bindings = named_defaults();
+        for (key, name) in overrides {
+            let Some(spec) = parse_key(key) else { continue };
+            bindings.retain(|(k, _)| *k != spec);
+            if let Some(name) = Command::from_name(name).and_then(|c| crate::model::command::name_of(&c)) {
+                bindings.push((spec, name));
+            }
+        }
+        KeyTable { bindings }
+    }
+
+    pub fn keys_of(&self, name: &str) -> Vec<KeySpec> {
+        self.bindings
+            .iter()
+            .filter(|(_, n)| *n == name)
+            .map(|(k, _)| *k)
+            .collect()
+    }
+
+    pub fn owner_of(&self, key: &KeySpec) -> Option<&'static str> {
+        self.bindings.iter().find(|(k, _)| k == key).map(|(_, n)| *n)
+    }
+
+    /// Bind `key` to `name`; returns the other command it was taken from, if any.
+    pub fn assign(&mut self, key: KeySpec, name: &'static str) -> Option<&'static str> {
+        let prev = self.owner_of(&key);
+        if prev == Some(name) {
+            return None;
+        }
+        self.remove(&key);
+        self.bindings.push((key, name));
+        prev
+    }
+
+    pub fn remove(&mut self, key: &KeySpec) {
+        self.bindings.retain(|(k, _)| k != key);
+    }
+
+    /// The command's default keys only, taken back from other commands if needed.
+    pub fn reset(&mut self, name: &str) {
+        self.bindings.retain(|(_, n)| *n != name);
+        for (k, n) in named_defaults().into_iter().filter(|(_, n)| *n == name) {
+            self.remove(&k);
+            self.bindings.push((k, n));
+        }
+    }
+
+    pub fn reset_all(&mut self) {
+        self.bindings = named_defaults();
+    }
+
+    pub fn is_default(&self, name: &str) -> bool {
+        let mut now = self.keys_of(name);
+        let mut def: Vec<KeySpec> = named_defaults()
+            .into_iter()
+            .filter(|(_, n)| *n == name)
+            .map(|(k, _)| k)
+            .collect();
+        let key = |k: &KeySpec| (k.vk, k.ctrl, k.alt, k.shift);
+        now.sort_by_key(key);
+        def.sort_by_key(key);
+        now == def
+    }
+
+    /// `[keys]` that reproduce this table: "None" for removed defaults, command names for
+    /// the rest. Entries of `keep` that are not key specs (characters such as ":") are kept.
+    pub fn to_overrides(&self, keep: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let defaults = named_defaults();
+        let mut out = BTreeMap::new();
+        for (k, n) in &defaults {
+            match self.owner_of(k) {
+                None => {
+                    out.insert(format_key(k), "None".to_string());
+                }
+                Some(m) if m != *n => {
+                    out.insert(format_key(k), m.to_string());
+                }
+                Some(_) => {}
+            }
+        }
+        for (k, n) in &self.bindings {
+            if !defaults.iter().any(|(dk, _)| dk == k) {
+                out.insert(format_key(k), n.to_string());
+            }
+        }
+        for (key, name) in keep {
+            if parse_key(key).is_none() {
+                out.insert(key.clone(), name.clone());
+            }
+        }
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn same_as_keymap(t: &KeyTable, m: &KeyMap) {
+        assert_eq!(t.bindings.len(), m.bindings.len());
+        for (k, n) in &t.bindings {
+            assert_eq!(m.lookup(k), Command::from_name(n).as_ref(), "{}", format_key(k));
+        }
+    }
+
+    #[test]
+    fn key_table_matches_keymap() {
+        let mut o = BTreeMap::new();
+        o.insert("F5".to_string(), "None".to_string());
+        o.insert("Ctrl+Q".to_string(), "GoHome".to_string());
+        o.insert("Ctrl+T".to_string(), "CloseTab".to_string());
+        o.insert(":".to_string(), "None".to_string());
+        let t = KeyTable::from_overrides(&o);
+        let (m, _) = KeyMap::new(&o);
+        same_as_keymap(&t, &m);
+        assert_eq!(t.owner_of(&parse_key("Ctrl+T").unwrap()), Some("CloseTab"));
+        assert!(t.owner_of(&parse_key("F5").unwrap()).is_none());
+        // Every default command has a name.
+        assert_eq!(named_defaults().len(), default_bindings().len());
+    }
+
+    #[test]
+    fn key_table_edits() {
+        let mut t = KeyTable::from_overrides(&BTreeMap::new());
+        let k = |s: &str| parse_key(s).unwrap();
+        assert!(t.is_default("GoHome"));
+        // Free key.
+        assert_eq!(t.assign(k("Ctrl+Q"), "GoHome"), None);
+        assert_eq!(t.keys_of("GoHome"), [k("Alt+Home"), k("Ctrl+Q")]);
+        assert!(!t.is_default("GoHome"));
+        // Taken from another command.
+        assert_eq!(t.assign(k("Ctrl+Shift+H"), "GoHome"), Some("ToggleDotfiles"));
+        assert!(t.keys_of("ToggleDotfiles").is_empty());
+        assert_eq!(t.assign(k("Ctrl+Shift+H"), "GoHome"), None);
+        t.remove(&k("Alt+Home"));
+        assert_eq!(t.keys_of("GoHome"), [k("Ctrl+Q"), k("Ctrl+Shift+H")]);
+        // Reset takes the default key back from GoHome.
+        t.reset("ToggleDotfiles");
+        assert_eq!(t.keys_of("ToggleDotfiles"), [k("Ctrl+Shift+H")]);
+        assert_eq!(t.keys_of("GoHome"), [k("Ctrl+Q")]);
+        t.reset("GoHome");
+        assert!(t.is_default("GoHome"));
+        t.assign(k("F9"), "Refresh");
+        t.reset_all();
+        assert_eq!(t, KeyTable::from_overrides(&BTreeMap::new()));
+    }
+
+    #[test]
+    fn key_table_overrides_round_trip() {
+        let mut keep = BTreeMap::new();
+        keep.insert(":".to_string(), "None".to_string());
+        keep.insert(";".to_string(), "CommandLine".to_string());
+        let mut t = KeyTable::from_overrides(&keep);
+        assert_eq!(t.to_overrides(&BTreeMap::new()), BTreeMap::new());
+        let k = |s: &str| parse_key(s).unwrap();
+        t.assign(k("Ctrl+Shift+H"), "GoHome");
+        t.remove(&k("F5"));
+        t.assign(k("Ctrl+Q"), "OpenSettings");
+        let o = t.to_overrides(&keep);
+        assert_eq!(o.get("Ctrl+Shift+H").map(String::as_str), Some("GoHome"));
+        assert_eq!(o.get("F5").map(String::as_str), Some("None"));
+        assert_eq!(o.get("Ctrl+Q").map(String::as_str), Some("OpenSettings"));
+        assert_eq!(o.get(";").map(String::as_str), Some("CommandLine"));
+        assert_eq!(o.get(":").map(String::as_str), Some("None"));
+        let (m, w) = KeyMap::new(&o);
+        assert!(w.is_empty());
+        same_as_keymap(&KeyTable::from_overrides(&o), &m);
+        let mut a = KeyTable::from_overrides(&o).bindings;
+        let mut b = t.bindings.clone();
+        let key = |x: &(KeySpec, &str)| (x.0.vk, x.0.ctrl, x.0.alt, x.0.shift);
+        a.sort_by_key(key);
+        b.sort_by_key(key);
+        assert_eq!(a, b);
+    }
 
     #[test]
     fn parse() {

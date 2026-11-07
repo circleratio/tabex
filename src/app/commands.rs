@@ -107,18 +107,7 @@ impl App {
                 self.after_tabs_changed();
                 self.layout();
             }
-            ToggleNavTree => {
-                self.config.nav_tree_visible = !self.config.nav_tree_visible;
-                self.config_dirty = true;
-                self.layout();
-                // Keyboard input must not go to a hidden tree.
-                let focus = unsafe { GetFocus() };
-                if !self.config.nav_tree_visible
-                    && (focus == self.nav.hwnd || unsafe { IsChild(self.nav.hwnd, focus).as_bool() })
-                {
-                    self.focus_active_list();
-                }
-            }
+            ToggleNavTree => self.set_nav_tree_visible(!self.config.nav_tree_visible),
             Back | Forward => {
                 let tab = self.ws.active_tab_mut();
                 let cur = tab.location.clone();
@@ -251,11 +240,7 @@ impl App {
             ToggleExtensions => {
                 self.config.show_extensions = !self.config.show_extensions;
                 self.config_dirty = true;
-                for p in &self.panes {
-                    unsafe {
-                        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(p.list), None, false);
-                    }
-                }
+                self.redraw_lists();
             }
             Rename => self.begin_rename(),
             NewFolder => self.new_folder(),
@@ -276,6 +261,7 @@ impl App {
                 self.workspace_delete(&name);
             }
             WorkspaceSwitch(name) => self.workspace_switch(&name),
+            OpenSettings => ui::settings_dialog::show(self),
         }
     }
 
@@ -330,7 +316,7 @@ impl App {
     }
 
     /// Re-filter every listing and the navigation tree after a visibility setting changed.
-    fn apply_filter_change(&mut self, message: &str) {
+    pub fn apply_filter_change(&mut self, message: &str) {
         self.config_dirty = true;
         let f = self.filter();
         let ids: Vec<TabId> = self.rt.keys().copied().collect();
@@ -380,7 +366,7 @@ impl App {
     }
 
     pub fn on_command(&mut self, id: i32, code: u16, ctl: HWND) {
-        if ctl == self.toolbar.hwnd {
+        if self.toolbar.owns(ctl) {
             return self.on_toolbar_command(id);
         }
         for side in PaneSide::BOTH {

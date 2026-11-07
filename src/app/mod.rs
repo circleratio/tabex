@@ -5,6 +5,7 @@ mod menu;
 mod middle;
 mod narrow;
 mod panes;
+mod settings;
 mod shellops;
 mod toolbar;
 mod tree;
@@ -47,6 +48,8 @@ use worker::{Inbox, Notifier, Pool, WM_APP_WORKER};
 pub const WM_APP_IDLE_INIT: u32 = WM_APP + 2;
 pub const TIMER_AUTOSAVE: usize = 1;
 pub const TIMER_STATUS_CLEAR: usize = 2;
+/// Debounces outside edits of config.toml.
+pub const TIMER_CONFIG_RELOAD: usize = 3;
 
 pub const ID_LIST: [i32; 2] = [100, 101];
 pub const ID_EDIT: [i32; 2] = [130, 131];
@@ -56,6 +59,7 @@ pub const ID_FILTER_EDIT: [i32; 2] = [170, 171];
 pub const ID_TREE: i32 = 110;
 pub const ID_STATUS: i32 = 120;
 pub const ID_TOOLBAR: i32 = 125;
+pub const ID_TOOLBAR_END: i32 = 126;
 
 pub enum WorkerMsg {
     Enum {
@@ -167,6 +171,13 @@ pub struct App {
     pub menu: menu::MenuState,
     pub toolbar: ui::toolbar::Toolbar,
     pub status_message: Option<String>,
+    /// Text tabex last wrote to config.toml, to ignore our own changes when watching it.
+    pub config_written: Option<String>,
+    /// config.toml changed while the settings dialog was open.
+    pub config_reload_pending: bool,
+    pub settings_dialog_open: bool,
+    /// Page of the settings dialog shown last (this run only).
+    pub settings_page: usize,
     pub editing_label: bool,
     pub fileop_pool: Pool,
     pub undo_stack: Vec<crate::shell::undo::UndoOp>,
@@ -352,7 +363,7 @@ impl App {
                 None,
             )?
         };
-        let toolbar = ui::toolbar::Toolbar::create(hwnd, ID_TOOLBAR, dpi)?;
+        let toolbar = ui::toolbar::Toolbar::create(hwnd, ID_TOOLBAR, ID_TOOLBAR_END, dpi)?;
         let (notifier, inbox) = worker::channel_for::<WorkerMsg>(hwnd);
         let wn = notifier.clone();
         let watcher = Watcher::new(move |ev| wn.send(WorkerMsg::Watch(ev))).ok();
@@ -396,6 +407,10 @@ impl App {
             menu: menu::MenuState::default(),
             toolbar,
             status_message: None,
+            config_written: None,
+            config_reload_pending: false,
+            settings_dialog_open: false,
+            settings_page: 0,
             editing_label: false,
             fileop_pool: Pool::new("fileop", 1),
             undo_stack: Vec::new(),
@@ -406,6 +421,7 @@ impl App {
             thumbs: Default::default(),
         };
         app.apply_font();
+        app.watch_config();
         if !warnings.is_empty() {
             app.show_status(&warnings.join(" / "));
         }
@@ -449,7 +465,7 @@ impl App {
 
     pub fn layout(&mut self) {
         let r = self.compute_layout();
-        ui::place(self.toolbar.hwnd, r.toolbar, true);
+        self.toolbar.place(r.toolbar);
         match r.nav {
             Some(nav) => ui::place(self.nav.hwnd, nav, true),
             None => ui::place(self.nav.hwnd, Rect::default(), false),
@@ -729,6 +745,12 @@ impl App {
                 }
                 self.status_message = None;
                 self.update_status();
+            }
+            TIMER_CONFIG_RELOAD => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_CONFIG_RELOAD);
+                }
+                self.reload_config();
             }
             _ => {}
         }
