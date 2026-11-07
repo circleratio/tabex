@@ -3,6 +3,7 @@
 pub mod cmdline;
 pub mod command;
 pub mod history;
+pub mod homes;
 pub mod layout;
 pub mod listing;
 pub mod narrow;

@@ -126,6 +126,7 @@ pub fn default_bindings() -> Vec<(&'static str, Command)> {
         ("Alt+Left", Back),
         ("Alt+Right", Forward),
         ("Alt+Up", Up),
+        ("Alt+Home", GoHome),
         ("Backspace", Up),
         ("F5", Refresh),
         ("Ctrl+R", Refresh),
@@ -355,6 +356,17 @@ mod tests {
         }
         // Modifier order is normalized.
         assert_eq!(format_key(&parse_key("shift+ctrl+h").unwrap()), "Ctrl+Shift+H");
+    }
+
+    #[test]
+    fn home_key() {
+        let (m, _) = KeyMap::new(&BTreeMap::new());
+        let k = parse_key("Alt+Home").unwrap();
+        assert_eq!(m.lookup(&k), Some(&Command::GoHome));
+        assert_eq!(m.key_for(&Command::GoHome).map(format_key).as_deref(), Some("Alt+Home"));
+        // Works everywhere: not a list command and not stolen from edits as typing.
+        assert!(!is_list_command(&Command::GoHome));
+        assert!(!is_edit_key(&k));
     }
 
     #[test]

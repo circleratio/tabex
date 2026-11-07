@@ -147,6 +147,10 @@ impl App {
                 self.start_enum(id, true);
             }
             FocusAddress => ui::addressbar::begin_edit(self, side),
+            GoHome => {
+                let loc = self.homes[0].location.clone();
+                self.go_home_to(&loc);
+            }
             Navigate(loc) => {
                 let id = self.ws.active_tab().id;
                 self.navigate(id, loc, true, None);

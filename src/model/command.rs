@@ -26,6 +26,8 @@ pub enum Command {
     Back,
     Forward,
     Up,
+    /// Go to the primary home directory.
+    GoHome,
     Refresh,
     FocusAddress,
     Navigate(Location),
@@ -90,6 +92,7 @@ impl Command {
             "Back" => Back,
             "Forward" => Forward,
             "Up" => Up,
+            "GoHome" => GoHome,
             "Refresh" => Refresh,
             "FocusAddress" => FocusAddress,
             "Open" => Open,
@@ -157,6 +160,7 @@ mod tests {
             Some(Command::WorkspaceNew { from_current: true })
         );
         assert_eq!(Command::from_name("Exit"), None);
+        assert_eq!(Command::from_name("GoHome"), Some(Command::GoHome));
         assert_eq!(Command::from_name("SelectTab0"), None);
         assert_eq!(Command::from_name("nope"), None);
     }

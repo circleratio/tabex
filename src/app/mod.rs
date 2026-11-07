@@ -152,6 +152,8 @@ pub struct App {
     pub autosave: Debouncer,
     pub config_dirty: bool,
     pub home: Location,
+    /// Home directories for the home button; never empty, the first is the primary.
+    pub homes: Vec<crate::model::homes::Home>,
     pub next_generation: u64,
     pub suppress_selection: bool,
     /// Set while the filter bar text is replaced programmatically (ignore EN_CHANGE).
@@ -354,7 +356,13 @@ impl App {
         let (notifier, inbox) = worker::channel_for::<WorkerMsg>(hwnd);
         let wn = notifier.clone();
         let watcher = Watcher::new(move |ev| wn.send(WorkerMsg::Watch(ev))).ok();
-        let (keymap, key_warnings) = KeyMap::new(&config.keys);
+        let (keymap, mut warnings) = KeyMap::new(&config.keys);
+        let (homes, home_warnings) = crate::model::homes::resolve(
+            config.homes.iter().map(|h| (h.name.as_deref(), h.path.as_deref())),
+            crate::shell::names::expand_env,
+            &home,
+        );
+        warnings.extend(home_warnings);
         let mut app = App {
             hwnd,
             base,
@@ -377,6 +385,7 @@ impl App {
             autosave: Debouncer::new(AUTOSAVE_DELAY),
             config_dirty: false,
             home,
+            homes,
             next_generation: 1,
             suppress_selection: false,
             narrow_syncing: false,
@@ -397,8 +406,8 @@ impl App {
             thumbs: Default::default(),
         };
         app.apply_font();
-        if !key_warnings.is_empty() {
-            app.show_status(&key_warnings.join(" / "));
+        if !warnings.is_empty() {
+            app.show_status(&warnings.join(" / "));
         }
         Ok(app)
     }

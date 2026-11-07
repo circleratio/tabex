@@ -6,6 +6,7 @@ use windows::Win32::UI::Controls::*;
 
 use super::*;
 use crate::model::command::Command;
+use crate::model::homes;
 use crate::model::toolbar::{self, ButtonId, ToolbarState, VIEW_MODES};
 use crate::ui::accel::format_key;
 use crate::ui::toolbar::Toolbar;
@@ -44,6 +45,14 @@ impl App {
                 self.view_mode_menu();
                 Some(LRESULT(TBDDRET_DEFAULT as isize))
             }
+            NM_RCLICK if hdr.hwndFrom == self.toolbar.hwnd => {
+                let nm = unsafe { &*(lp.0 as *const NMMOUSE) };
+                if Toolbar::button_of(nm.dwItemSpec as i32) == Some(ButtonId::Home) {
+                    self.home_menu();
+                }
+                // Non-zero: no default handling and no WM_CONTEXTMENU.
+                Some(LRESULT(1))
+            }
             TTN_GETDISPINFOW => {
                 let button = Toolbar::button_of(hdr.idFrom as i32)?;
                 let def = toolbar::def(button);
@@ -61,8 +70,9 @@ impl App {
         }
     }
 
-    fn view_mode_menu(&mut self) {
-        let rc = self.toolbar.button_rect(ButtonId::ViewMode);
+    /// Screen position just below a button, for its menu.
+    fn below_button(&self, id: ButtonId) -> POINT {
+        let rc = self.toolbar.button_rect(id);
         let mut pt = POINT {
             x: rc.left,
             y: rc.bottom,
@@ -70,6 +80,43 @@ impl App {
         unsafe {
             let _ = ClientToScreen(self.toolbar.hwnd, &mut pt);
         }
+        pt
+    }
+
+    /// Move the active tab to a home directory, like typing it in the address bar; nothing
+    /// happens when the tab already shows it.
+    pub fn go_home_to(&mut self, loc: &Location) {
+        // A missing folder does not resolve: go there as written and show "not found".
+        let loc = crate::shell::names::resolve(loc.as_str()).unwrap_or_else(|| loc.clone());
+        if homes::same_place(&self.ws.active_tab().location, &loc) {
+            return;
+        }
+        self.execute(Command::Navigate(loc));
+    }
+
+    /// Right click on the home button: every home directory, the current one checked.
+    fn home_menu(&mut self) {
+        let pt = self.below_button(ButtonId::Home);
+        let current = self.ws.active_tab().location.clone();
+        // Compare with the configured paths only, so network paths never slow the menu down.
+        let items = self
+            .homes
+            .iter()
+            .map(|h| {
+                Some((
+                    homes::menu_label(h),
+                    Command::Navigate(h.location.clone()),
+                    homes::same_place(&h.location, &current),
+                ))
+            })
+            .collect();
+        if let Some(Command::Navigate(loc)) = self.menu.track(self.hwnd, items, pt.x, pt.y) {
+            self.go_home_to(&loc);
+        }
+    }
+
+    fn view_mode_menu(&mut self) {
+        let pt = self.below_button(ButtonId::ViewMode);
         let current = self.ws.active_tab().view.mode;
         let items = VIEW_MODES
             .iter()

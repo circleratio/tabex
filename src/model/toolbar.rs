@@ -5,6 +5,7 @@ use super::workspace::ViewMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonId {
+    Home,
     Undo,
     ViewMode,
     Hidden,
@@ -56,13 +57,21 @@ pub struct ToolbarState {
 }
 
 /// Left to right.
-pub const BUTTONS: [ButtonDef; 8] = [
+pub const BUTTONS: [ButtonDef; 9] = [
+    ButtonDef {
+        id: ButtonId::Home,
+        kind: ButtonKind::Push,
+        label: "ホーム",
+        command: Some(Command::GoHome),
+        group: 0,
+        glyph: Glyph::Icon('\u{E80F}'),
+    },
     ButtonDef {
         id: ButtonId::Undo,
         kind: ButtonKind::Push,
         label: "元に戻す",
         command: Some(Command::Undo),
-        group: 0,
+        group: 1,
         glyph: Glyph::Icon('\u{E7A7}'),
     },
     ButtonDef {
@@ -70,7 +79,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Dropdown,
         label: "表示モード",
         command: None,
-        group: 1,
+        group: 2,
         glyph: Glyph::Icon('\u{E71D}'),
     },
     ButtonDef {
@@ -78,7 +87,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Check,
         label: "隠しファイル",
         command: Some(Command::ToggleHidden),
-        group: 2,
+        group: 3,
         glyph: Glyph::Icon('\u{E7B3}'),
     },
     ButtonDef {
@@ -86,7 +95,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Check,
         label: "ドットファイル",
         command: Some(Command::ToggleDotfiles),
-        group: 2,
+        group: 3,
         glyph: Glyph::Text(".*"),
     },
     ButtonDef {
@@ -94,7 +103,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Check,
         label: "ファイル名拡張子",
         command: Some(Command::ToggleExtensions),
-        group: 2,
+        group: 3,
         glyph: Glyph::Text(".ext"),
     },
     ButtonDef {
@@ -102,7 +111,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Check,
         label: "ナビゲーション ウィンドウ",
         command: Some(Command::ToggleNavTree),
-        group: 3,
+        group: 4,
         glyph: Glyph::Icon('\u{E90C}'),
     },
     ButtonDef {
@@ -110,7 +119,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Check,
         label: "2 ペイン表示",
         command: Some(Command::ToggleLayout),
-        group: 3,
+        group: 4,
         glyph: Glyph::Icon('\u{F57C}'),
     },
     ButtonDef {
@@ -118,7 +127,7 @@ pub const BUTTONS: [ButtonDef; 8] = [
         kind: ButtonKind::Push,
         label: "最新の情報に更新",
         command: Some(Command::Refresh),
-        group: 4,
+        group: 5,
         glyph: Glyph::Icon('\u{E72C}'),
     },
 ];
@@ -150,7 +159,7 @@ pub fn checked(id: ButtonId, st: &ToolbarState) -> bool {
         ButtonId::Extensions => st.show_extensions,
         ButtonId::NavTree => st.nav_visible,
         ButtonId::Layout => st.dual,
-        ButtonId::Undo | ButtonId::ViewMode | ButtonId::Refresh => false,
+        ButtonId::Home | ButtonId::Undo | ButtonId::ViewMode | ButtonId::Refresh => false,
     }
 }
 
@@ -195,10 +204,13 @@ mod tests {
         use ButtonId::*;
         assert_eq!(
             ids,
-            [Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh]
+            [
+                Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh
+            ]
         );
         let groups: Vec<u8> = BUTTONS.iter().map(|b| b.group).collect();
-        assert_eq!(groups, [0, 1, 2, 2, 2, 3, 3, 4]);
+        assert_eq!(groups, [0, 1, 2, 3, 3, 3, 4, 4, 5]);
+        assert_eq!(def(Home).command, Some(Command::GoHome));
         assert_eq!(def(Undo).command, Some(Command::Undo));
         assert_eq!(def(ViewMode).command, None);
         assert_eq!(def(ViewMode).kind, ButtonKind::Dropdown);
@@ -211,7 +223,7 @@ mod tests {
         for id in [Hidden, Dotfiles, Extensions, NavTree, Layout] {
             assert_eq!(def(id).kind, ButtonKind::Check);
         }
-        for id in [Undo, Refresh] {
+        for id in [Home, Undo, Refresh] {
             assert_eq!(def(id).kind, ButtonKind::Push);
         }
     }

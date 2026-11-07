@@ -49,6 +49,7 @@ tabex/
 │   │   ├── history.rs       # back/forward
 │   │   ├── listing.rs       # Entry, Listing, sorted index, filter, selection
 │   │   ├── narrow.rs        # narrowing query, migemo pattern parser and matcher
+│   │   ├── homes.rs         # home directory list from config (pure)
 │   │   ├── layout.rs        # window geometry
 │   │   ├── toolbar.rs       # toolbar button definitions and state (pure)
 │   │   └── command.rs       # Command enum
@@ -204,6 +205,7 @@ pub enum Command {
     Back, Forward, Up, Refresh, FocusAddress, Navigate(Location),
     Open, OpenInNewTab, Rename, NewFolder, Delete { permanent: bool },
     Copy, Cut, Paste, Undo, SelectAll, Properties,
+    GoHome,  // primary home directory (§7.12)
     SetViewMode(ViewMode), SortBy(ColumnId), ToggleHidden, ToggleDotfiles, ToggleExtensions,
     WorkspaceList, WorkspaceNew { from_current: bool },
     WorkspaceRename(String), WorkspaceDelete(String), WorkspaceSwitch(String),
@@ -502,7 +504,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 | J / K | CursorDown / CursorUp | Shift+J / Shift+K | ExtendSelectionDown / ExtendSelectionUp |
 | H / L | PrevTab / NextTab | | |
 | / | NarrowStart | Esc（一覧） | NarrowClear |
-| Ctrl+U / Ctrl+B | Up | | |
+| Ctrl+U / Ctrl+B | Up | Alt+Home | GoHome |
 
 #### 7.7.1 vi 風のカーソル移動（hjkl）
 
@@ -755,7 +757,7 @@ pub fn launch(kind: &ShellKind, dir: &str) -> Result<(), String>
 #### ボタンの定義（`model::toolbar`、純粋関数）
 
 ```rust
-pub enum ButtonId { Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh }
+pub enum ButtonId { Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh }
 pub enum ButtonKind { Push, Check, Dropdown }
 pub enum Glyph { Icon(char), Text(&'static str) }
 
@@ -780,7 +782,7 @@ pub struct ToolbarState {
     pub dual: bool,
 }
 
-pub const BUTTONS: [ButtonDef; 8];                  // left to right
+pub const BUTTONS: [ButtonDef; 9];                  // left to right
 pub const VIEW_MODES: [(ViewMode, &str, Glyph); 5]; // dropdown order: large, medium, small, list, details
 pub fn checked(id: ButtonId, st: &ToolbarState) -> bool;
 pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool;  // false only for Undo without history
@@ -792,14 +794,15 @@ pub fn view_mode_index(mode: ViewMode) -> usize;          // position in VIEW_MO
 
 | `ButtonId` | 種類 | `label` | `command` | group | グリフ |
 |---|---|---|---|---|---|
-| `Undo` | Push | 元に戻す | `Undo` | 0 | U+E7A7（Undo） |
-| `ViewMode` | Dropdown | 表示モード | なし | 1 | 今のモードのグリフ（`VIEW_MODES`） |
-| `Hidden` | Check | 隠しファイル | `ToggleHidden` | 2 | U+E7B3（目） |
-| `Dotfiles` | Check | ドットファイル | `ToggleDotfiles` | 2 | `Text(".*")` |
-| `Extensions` | Check | ファイル名拡張子 | `ToggleExtensions` | 2 | `Text(".ext")` |
-| `NavTree` | Check | ナビゲーション ウィンドウ | `ToggleNavTree` | 3 | U+E90C（左側のパネル） |
-| `Layout` | Check | 2 ペイン表示 | `ToggleLayout` | 3 | U+F57C（左右に 2 分割） |
-| `Refresh` | Push | 最新の情報に更新 | `Refresh` | 4 | U+E72C（Refresh） |
+| `Home` | Push（右クリックで一覧） | ホーム | `GoHome` | 0 | U+E80F（Home。実装時に両フォントで確認する） |
+| `Undo` | Push | 元に戻す | `Undo` | 1 | U+E7A7（Undo） |
+| `ViewMode` | Dropdown | 表示モード | なし | 2 | 今のモードのグリフ（`VIEW_MODES`） |
+| `Hidden` | Check | 隠しファイル | `ToggleHidden` | 3 | U+E7B3（目） |
+| `Dotfiles` | Check | ドットファイル | `ToggleDotfiles` | 3 | `Text(".*")` |
+| `Extensions` | Check | ファイル名拡張子 | `ToggleExtensions` | 3 | `Text(".ext")` |
+| `NavTree` | Check | ナビゲーション ウィンドウ | `ToggleNavTree` | 4 | U+E90C（左側のパネル） |
+| `Layout` | Check | 2 ペイン表示 | `ToggleLayout` | 4 | U+F57C（左右に 2 分割） |
+| `Refresh` | Push | 最新の情報に更新 | `Refresh` | 5 | U+E72C（Refresh） |
 
 - `VIEW_MODES` のグリフは、大アイコン U+EB9F（画像）、中アイコン U+F0E2（2×2）、小アイコン U+E80A（3×3）、一覧 U+E8FD、詳細 U+E71D とする。
 - グリフは、Segoe MDL2 Assets（Windows 10）と Segoe Fluent Icons（Windows 11）の両方で同じ番号に同じ意味の絵があるものを、両フォントの描画を見比べて選んだ。番号は `model::toolbar` の 1 か所にだけ書く。ドットファイルと拡張子にはふさわしい絵がないので、`Glyph::Text` で短い文字を描く。
@@ -857,6 +860,7 @@ impl Toolbar {
   - `TBN_DROPDOWN` を受けたら、`button_rect(ViewMode)` の左下を画面座標に直し、`MenuState::track` で `VIEW_MODES` の 5 項目を出す。
   - 各項目の文字は「名前\tキー」とする。キーは `key_for(SetViewMode(m))` を `format_key` で表記したもの。今のモードには印を付ける。
   - 項目が選ばれたら `SetViewMode(m)` を `execute` し、通知には `TBDDRET_DEFAULT` を返す。
+- ホームの右クリック: ツールバーは、ボタンの上で右クリックされると `NM_RCLICK`（`NMMOUSE`、`dwItemSpec` がボタンのコマンド ID）を親に送る。`hwndFrom` がツールバーで、`Toolbar::button_of(dwItemSpec)` が `Home` なら `home_menu()`（§7.12）を出して 1 を返す（既定の処理と `WM_CONTEXTMENU` を止める）。ほかのボタンの右クリックでは何もしない。
 - ツールチップ: `WM_NOTIFY` の `TTN_GETDISPINFOW` で、`idFrom` がツールバーのボタンのときに処理する。
   - `tooltip(label, key_for(command).map(format_key))` の結果を `Toolbar::set_tip` に入れ、その文字列を `lpszText` に渡す。
   - `ViewMode` はキーを付けず「表示モード」だけにする。キーが 5 つあるため、それぞれドロップダウンの項目に出す。
@@ -945,6 +949,73 @@ pub fn order<T>(items: Vec<(Account, T)>, name: impl Fn(&T) -> &str) -> Vec<(Acc
 - 子の読み込みは非同期なので、`TVN_ITEMEXPANDING` の時点では子がなく、ツリーは展開されない。そのため `add_children` は、子を 1 つ以上挿入したら必ず `TVM_EXPAND` で親を展開する（以前は「PC」だけだったため、ほかのフォルダは 1 回目の展開で中身が出なかった）。読み込みが始まるのは、ユーザーが展開したときと、起動時に「PC」を開くときだけなので、常に展開してよい。
 - ツリーを作るのは最初のアイドル時（`WM_APP_IDLE_INIT`）なので、レジストリの読み込みとフォルダの存在確認は起動時間に影響しない。
 - 隠しファイル・ドットファイルを切り替えると、`apply_filter_change` が `nav.reset()` → `build_nav_tree()` でツリーを最上位から作り直す。このときも `accounts()` を読み直すので、起動後にサインイン・サインアウトしていれば、その時点で反映される。要求仕様では起動中の反映は求めていないが、読み直しは数個のレジストリ値とフォルダの確認だけなので、そのままにする。
+
+### 7.12 ホームディレクトリ（`model::homes`、`store::config`、`app::toolbar`）
+
+要求仕様 §3.3。
+
+#### 設定（`store::config`）
+
+```rust
+/// One `[[homes]]` table as written; validated by `model::homes::resolve`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct HomeSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+// in Config
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub homes: Vec<HomeSpec>,
+```
+
+- `path` も `Option` にしておき、`path` のない項目があってもファイル全体の読み込みは失敗させない（その項目だけを `resolve` で不正として扱う）。
+- tabex は `homes` を書き換えないが、`config.toml` を保存するとき（ウィンドウ位置などの更新）は書かれていたとおりの内容で書き戻す。保存すると利用者が書いたコメントが消えるのは、これまでの `config.toml` 全体のふるまいと同じである。
+
+#### 一覧の解決（`model::homes`、純粋関数）
+
+```rust
+pub struct Home {
+    pub name: Option<String>,
+    pub location: Location, // path after env expansion, as written otherwise
+}
+
+/// Valid entries in order, or `[fallback]` when none is valid; plus one warning per
+/// invalid entry. `expand` expands %VAR% (shell::names::expand_env in the app).
+pub fn resolve<'a>(
+    entries: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>, // (name, path)
+    expand: impl Fn(&str) -> String,
+    fallback: &Location,
+) -> (Vec<Home>, Vec<String>);
+
+pub fn is_absolute(path: &str) -> bool;                // "X:\..." or "\\server\share..."
+pub fn same_place(a: &Location, b: &Location) -> bool; // ignores case and a trailing '\'
+pub fn menu_label(h: &Home) -> String;                 // "仕事\tD:\work" / "D:\work"
+```
+
+- `resolve` の手順（項目ごと）:
+  1. `path` がない、または前後の空白を除いて空なら不正（理由「path がありません」）。
+  2. `expand` で環境変数を展開し、前後の空白を除く。`is_absolute` でなければ不正（理由「絶対パスではありません: (展開後の値)」）。
+  3. 末尾の `\` はドライブのルート（`D:\`）以外では取り除き、`Location::new` にする。`name` は前後の空白を除き、空なら `None` にする。
+- 警告の文言は「ホームディレクトリの設定が不正です: N 番目（理由）」とする（N は `[[homes]]` の 1 から数えた番号）。
+- 使える項目が 1 つもなければ、`fallback`（ユーザーフォルダ、`App::home`）1 つだけの一覧を返す。
+- `menu_label` は、名前があれば「名前」と「パス」をタブ文字でつなぐ。メニューではタブ文字より後ろが右寄せの列になるので、名前とパスが 2 列に並ぶ。名前の中の `&` は `&&` にして、アクセスキーとして解釈されないようにする。
+
+#### App への組み込み
+
+- `App` に `homes: Vec<model::homes::Home>` を持たせる。`App::new` で `resolve(config.homes の (name, path), shell::names::expand_env, &home)` を呼んで作る。警告はキー割り当ての警告とまとめて、起動時にステータスバーへ表示する。設定は起動時にだけ読む（要求仕様 §3.3）。
+- `Command::GoHome` を追加する。`[keys]` で使う名前は `GoHome`、既定のキーは `Alt+Home` とする。`is_list_command` には含めない（どこにフォーカスがあっても効く。Alt を含むので Edit の入力も横取りしない）。
+- `App::go_home_to(&mut self, loc: &Location)`: ホームディレクトリへの移動。
+  1. `shell::names::resolve(loc.as_str()).unwrap_or(loc.clone())` で正規化する（ナビゲーションツリーやアドレスバーからの移動と同じ）。存在しないフォルダは `resolve` に失敗するので、書かれたパスのまま移動し、既存の「フォルダが見つかりません」の表示になる。
+  2. アクティブなタブの今の場所と `same_place` なら何もしない。
+  3. そうでなければ `Command::Navigate(loc)` を実行する（戻るの履歴に積み、絞り込みを解除する）。
+- `GoHome` の実行は `go_home_to(&self.homes[0].location)` とする（一覧は空にならない）。ツールバーのホームボタンの左クリックも `GoHome` を実行する。
+- `App::home_menu(&mut self)`: ホームボタンの右クリック。
+  - `button_rect(Home)` の左下を画面座標に直し、`MenuState::track` で `homes` の各項目を `menu_label` の文字で出す。アクティブなタブの場所と `same_place` の項目に印を付ける。
+  - 項目のコマンドには `Command::Navigate(home.location)` を入れておき、選ばれたら（`Navigate` をそのまま実行せず）その場所で `go_home_to` を呼ぶ。メニューを閉じただけなら何もしない。
+  - 印のための比較は設定に書かれたパスで行い、`resolve` は呼ばない（ネットワーク上のパスでメニューを開くのが遅くならないように）。
 
 ## 8. 起動、単一インスタンス、コマンドライン
 
@@ -1057,7 +1128,7 @@ strip = true
 | `model::narrow` | `Pattern::parse`: 文字・エスケープ・文字クラス（中のエスケープを含む）・入れ子のグループ・連結したグループ、閉じていない括弧や末尾の `\` がエラーになること。`is_match`: 名前の途中での一致、大小無視、`kaisha` の実際のパターンで「会社案内.pdf」「かいしゃ」「カイシャ」に一致し「会議」に一致しないこと、先頭の文字の索引で枝を取りこぼさないこと（同じ先頭文字の枝が複数・クラスで始まる枝・グループで始まる枝）。`Query::matches`: パターンがあっても部分一致の項目が一致すること、パターンなしのとき部分一致だけになること、`PartialEq` |
 | `model::layout` | ツールバーが上端に幅いっぱいで置かれ、ナビゲーションツリーとペインがその下から始まること（DPI 150% では高さ 48px）。絞り込みの入力欄を出したペインだけ一覧が縮むこと。1 ペイン / 2 ペインの配置。`split_ratio` の範囲外の値が丸められること。ナビゲーションツリーの表示 / 非表示。DPI 150% のとき |
 | `store::workspace_file` | 要求仕様にある TOML の例が読めること。読み込みと保存を往復しても内容が変わらないこと。項目が欠けているときの既定値。知らない version は読み込みエラーになること。構文エラーのとき |
-| `store::config` | 既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version |
+| `store::config` | 既定値（`nav_workspaces_expanded` と `migemo` が `true` になることを含む）、往復、最近使った一覧、知らない version、`[[homes]]` の読み込みと往復（`path` のない項目があってもファイル全体は読めること、`homes` が空なら書き出さないこと） |
 | `store::paths::validate_name` | 禁止文字・予約名・末尾が `.` や空白・長さ 0 と 65 文字・大文字小文字だけ違う名前の重複 |
 | `store::autosave` | 時刻を差し替えて、1 秒間変更がなかったときだけ保存すること。すぐ保存すべき場面（切替時など）で保存すること |
 | `cli` | 各オプション・複数のパス・不明なオプション・`--workspace` の値の抜け・`--help` と他の引数の混在 |
@@ -1065,9 +1136,10 @@ strip = true
 | `model::workspace` | 親フォルダの求め方（ドライブのルート、UNC）、パンくずの分割、タブタイトル |
 | `model::cmdline` | `sh`、前後の空白、空行、知らないコマンド、大文字の `SH` |
 | `shell::terminal` | `choose` の優先順位（見つかるものを差し替える）と設定の優先、`command_line` の引用符とドライブのルート、`is_cmd` |
+| `model::homes` | `resolve`（順序の保持、名前の省略と空白だけの名前、`path` の欠落・空・相対パスが警告になり番号が正しいこと、環境変数の展開、末尾の `\` の除去とドライブのルートの維持、使える項目が 0 件のとき `fallback` だけになること）、`is_absolute`（ドライブ・UNC・相対・`shell:`）、`same_place`（大小文字・末尾の `\`）、`menu_label`（名前あり・なし・`&` を含む名前） |
 | `model::toolbar` | ボタンの並びと区切り（要求仕様 §3.1 の表の順）、各ボタンの `command`、`checked` / `enabled` が `ToolbarState` に従うこと（元に戻すの履歴がないときだけ無効になること）、`ViewMode` のグリフが表示モードに従うこと、`tooltip` のキーありとキーなし |
 | `model::command` | `from_name("WorkspaceSaveAs")` が `WorkspaceNew { from_current: true }` になること |
-| `ui::accel` | `format_key` と `parse_key` の往復（修飾キーの順・名前付きキー・F キー）、`key_for` が既定の割り当てを先に返すことと、`None` で外したときに次の割り当てを返すこと、キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
+| `ui::accel` | `Alt+Home` の既定の割り当てが `GoHome` であること、`format_key` と `parse_key` の往復（修飾キーの順・名前付きキー・F キー）、`key_for` が既定の割り当てを先に返すことと、`None` で外したときに次の割り当てを返すこと、キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
 | `shell::onedrive` | `fallback_name`（個人用・組織名あり・組織名なし）、`order`（個人用が先頭、職場用が名前の自然順で `Business10` 相当が `Business2` 相当より後ろ、同じフォルダの重複は先の 1 つだけ残す、0 件） |

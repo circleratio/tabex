@@ -18,6 +18,16 @@ pub struct WindowPlacement {
     pub maximized: bool,
 }
 
+/// One `[[homes]]` table as written; validated by `model::homes::resolve`.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct HomeSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional here so one entry without a path does not make the whole file unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 fn yes() -> bool {
     true
 }
@@ -60,6 +70,9 @@ pub struct Config {
     /// Use rustmigemo.dll next to the exe for narrowing when it is there.
     #[serde(default = "yes")]
     pub migemo: bool,
+    /// Home directories for the toolbar's home button; the first one is the primary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub homes: Vec<HomeSpec>,
     /// Key overrides, e.g. `"Ctrl+Alt+W" = "WorkspaceList"`.
     #[serde(default)]
     pub keys: BTreeMap<String, String>,
@@ -164,6 +177,48 @@ shell = 'pwsh.exe -NoLogo'
         assert_eq!(c.shell.as_deref(), Some("pwsh.exe -NoLogo"));
         let again = from_toml(&toml::to_string(&c).unwrap(), Path::new("c.toml")).unwrap();
         assert_eq!(c, again);
+    }
+
+    #[test]
+    fn homes_round_trip() {
+        let text = r#"
+version = 1
+
+[[homes]]
+name = "仕事"
+path = 'D:\work'
+
+[[homes]]
+path = '\\nas\share'
+
+[[homes]]
+name = "no path"
+
+[keys]
+"Ctrl+Q" = "GoHome"
+"#;
+        let c = from_toml(text, Path::new("c.toml")).unwrap();
+        assert_eq!(
+            c.homes,
+            [
+                HomeSpec {
+                    name: Some("仕事".into()),
+                    path: Some(r"D:\work".into())
+                },
+                HomeSpec {
+                    name: None,
+                    path: Some(r"\\nas\share".into())
+                },
+                HomeSpec {
+                    name: Some("no path".into()),
+                    path: None
+                },
+            ]
+        );
+        let again = from_toml(&toml::to_string(&c).unwrap(), Path::new("c.toml")).unwrap();
+        assert_eq!(c, again);
+        assert!(Config::default().homes.is_empty());
+        assert!(!toml::to_string(&Config::default()).unwrap().contains("homes"));
     }
 
     #[test]
