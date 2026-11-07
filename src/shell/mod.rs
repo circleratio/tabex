@@ -7,6 +7,7 @@ pub mod fileop;
 pub mod icons;
 pub mod migemo;
 pub mod names;
+pub mod onedrive;
 pub mod terminal;
 pub mod thumbs;
 pub mod undo;

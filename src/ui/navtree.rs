@@ -1,4 +1,4 @@
-//! Navigation tree: workspaces, quick access, drives, network and recycle bin, filled lazily.
+//! Navigation tree: workspaces, home, OneDrive, drives, network and recycle bin, filled lazily.
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
@@ -12,12 +12,21 @@ use crate::fs::{extended_path, join};
 use crate::model::listing::{ATTR_DIRECTORY, ATTR_HIDDEN, Filter, is_dot_name};
 use crate::model::workspace::Location;
 
-pub const ROOTS: [&str; 4] = [
-    "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}", // Quick access / Home
-    "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",       // This PC
-    "shell:NetworkPlacesFolder",
-    "shell:RecycleBinFolder",
-];
+/// Quick access / Home.
+pub const HOME_ROOT: &str = "shell:::{679f85cb-0220-4080-b29b-5540cc05aab6}";
+const THIS_PC: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+/// Roots after the OneDrive items.
+pub const TAIL_ROOTS: [&str; 3] = [THIS_PC, "shell:NetworkPlacesFolder", "shell:RecycleBinFolder"];
+
+/// A top-level item whose name and icon are not taken from its own location (OneDrive).
+#[derive(Debug, Clone)]
+pub struct NavRoot {
+    pub name: String,
+    /// The real sync folder.
+    pub location: Location,
+    /// Index in the system image list.
+    pub icon: i32,
+}
 
 #[derive(Debug, Clone)]
 pub struct NavChild {
@@ -147,7 +156,8 @@ impl NavTree {
         idx
     }
 
-    pub fn populate_roots(&mut self) {
+    /// Workspace node, home, the OneDrive items, then this PC, network and recycle bin.
+    pub fn populate_roots(&mut self, onedrive: &[NavRoot]) {
         if !self.nodes.is_empty() {
             return;
         }
@@ -159,18 +169,32 @@ impl NavTree {
             icon,
             true,
         );
-        for r in ROOTS {
-            let Ok(pidl) = Pidl::parse(r) else { continue };
-            let name = shell_display_name(&pidl).unwrap_or_else(|| r.to_string());
-            let icon = crate::shell::icons::pidl_icon(pidl.as_ptr());
+        self.insert_shell_root(HOME_ROOT);
+        for r in onedrive {
             self.insert(
                 HTREEITEM::default(),
-                &name,
-                NavTarget::Folder(Location::new(r)),
-                icon,
+                &r.name,
+                NavTarget::Folder(r.location.clone()),
+                r.icon,
                 true,
             );
         }
+        for r in TAIL_ROOTS {
+            self.insert_shell_root(r);
+        }
+    }
+
+    fn insert_shell_root(&mut self, r: &str) {
+        let Ok(pidl) = Pidl::parse(r) else { return };
+        let name = shell_display_name(&pidl).unwrap_or_else(|| r.to_string());
+        let icon = crate::shell::icons::pidl_icon(pidl.as_ptr());
+        self.insert(
+            HTREEITEM::default(),
+            &name,
+            NavTarget::Folder(Location::new(r)),
+            icon,
+            true,
+        );
     }
 
     fn workspace_root(&self) -> Option<HTREEITEM> {
@@ -271,7 +295,7 @@ impl NavTree {
         let i = self
             .nodes
             .iter()
-            .position(|n| matches!(&n.target, NavTarget::Folder(l) if l.as_str() == ROOTS[1]))?;
+            .position(|n| matches!(&n.target, NavTarget::Folder(l) if l.as_str() == THIS_PC))?;
         Some(i)
     }
 
@@ -338,13 +362,15 @@ impl NavTree {
                 ..Default::default()
             };
             send(self.hwnd, TVM_SETITEMW, 0, &item as *const _ as isize);
-        } else if matches!(&self.nodes[node].target, NavTarget::Folder(l) if l.as_str() == ROOTS[1]) {
+        } else {
+            // Children arrive after TVN_ITEMEXPANDING found none, so the expansion did not
+            // happen; loads only start from an expansion (or "This PC" at startup).
             send(self.hwnd, TVM_EXPAND, TVE_EXPAND.0 as usize, parent.0);
         }
     }
 }
 
-fn shell_display_name(pidl: &Pidl) -> Option<String> {
+pub fn shell_display_name(pidl: &Pidl) -> Option<String> {
     unsafe {
         let p = SHGetNameFromIDList(pidl.as_ptr(), SIGDN_NORMALDISPLAY).ok()?;
         let s = p.to_string().ok();

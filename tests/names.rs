@@ -17,7 +17,8 @@ fn com() {
 #[test]
 fn tree_roots_resolve_to_enumerable_locations() {
     com();
-    for root in tabex::ui::navtree::ROOTS {
+    let roots = std::iter::once(tabex::ui::navtree::HOME_ROOT).chain(tabex::ui::navtree::TAIL_ROOTS);
+    for root in roots {
         let loc = resolve(root).unwrap_or_else(|| panic!("{root} did not resolve"));
         let req = EnumRequest {
             location: loc.clone(),

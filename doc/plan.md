@@ -678,3 +678,55 @@ start target\release\tabex.exe
 
 **完了条件**
 - テストが全件成功し、警告がなく、要求仕様 §3.1・§5.3・§9 に合わない動きが残っていない。
+
+---
+
+# 追加機能: ナビゲーションツリーの OneDrive
+
+要求仕様 §3.2、設計 §7.5.2 の実装手順。O1 のあとに O2、O3、O4 の順に進める。
+
+## O1. shell: アカウントの取得
+
+**やること**
+- `shell::onedrive` を作る（`Account` / `accounts` / `fallback_name` / `order`）。
+- 設計 §11.1 の観点で、`fallback_name` と `order` の単体テストを書く。
+
+**完了条件**
+- `cargo test` で、追加したテストを含めて全件成功する。
+- 一時的な確認コード（コミットしない）で `accounts()` を呼び、この PC の個人用アカウント（`C:\Users\circl\OneDrive`、`namespace` が `::{018D5C66-4533-4307-9B53-224DE2ED1FE6}`）だけが返り、`Business1` と `FileCoAuth` が含まれないことを確かめる。
+
+## O2. ナビゲーションツリーへの組み込み
+
+**やること**
+- `ui::navtree` の `ROOTS` を `HOME_ROOT` と `TAIL_ROOTS` に分け、`NavRoot` を足して `populate_roots(onedrive)` にする。
+- `app::tree` に `onedrive_roots()` を作り、`build_nav_tree` から `populate_roots` に渡す。
+
+**完了条件**
+- `cargo build --release` が通り、`cargo clippy --all-targets -- -D warnings` の警告がない。
+
+## O3. 手動動作確認
+
+`TABEX_HOME` を一時フォルダに向け、**起動する呼び出しの中で毎回設定して** 確認する。
+
+1. ナビゲーションツリーの最上位が「ワークスペース → ホーム → OneDrive - Personal → PC → ネットワーク → ごみ箱」の順に並び、OneDrive の項目の名前とアイコンがエクスプローラのナビゲーションウィンドウと同じ（雲のアイコン）である。
+2. 「OneDrive - Personal」をクリックすると、アクティブなタブで `C:\Users\circl\OneDrive` が開き、アドレスバーのパンくずが `Users › circl › OneDrive` になる。
+3. 項目を展開すると子のフォルダが並ぶ。隠しファイル・ドットファイルの切り替え後もツリーに OneDrive の項目が残り、子にも設定が効いている。
+4. ファイル一覧からファイルを OneDrive の項目へドラッグすると、同期フォルダへコピー（移動）できる（確認用のファイルは一時的なものを使い、確認後に削除する）。
+5. OneDrive のフォルダを開いたタブで `:sh` を実行すると、同期フォルダをカレントにしたシェルが開く。終了して起動し直すと、そのタブは実際のパスで復元される。
+6. ナビゲーションツリーを非表示にすると、OneDrive の項目も一緒に隠れる。
+7. 起動時間が変わらないこと（`TABEX_TRACE=1` で比べる）を確かめる。
+- 職場または学校用のアカウントと、OneDrive が未設定の環境は手元にないため確認しない（単体テストの `order` と、`accounts()` が `UserFolder` のないキーを除くことで担保する）。確認できなかったことを報告する。
+- 作業用の一時フォルダを削除する。
+
+**完了条件**
+- 上の 1〜7 がすべて期待どおりになる。
+
+## O4. 仕上げと最終確認
+
+**やること**
+- `README.md` のワークスペースの説明付近に、ナビゲーションツリーの OneDrive の項目のことを書き足す。
+- 要求仕様 §3.2 を 1 行ずつ実際の動きと突き合わせる。
+- `cargo test`、`cargo clippy --all-targets -- -D warnings`、`cargo build --release` を実行する。
+
+**完了条件**
+- テストが全件成功し、警告がなく、要求仕様 §3.2 に合わない動きが残っていない。

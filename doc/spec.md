@@ -72,6 +72,7 @@ tabex/
 │   │   ├── undo.rs          # undo records, restore from recycle bin
 │   │   ├── clipboard.rs     # data objects and clipboard formats
 │   │   ├── dragdrop.rs      # IDropTarget
+│   │   ├── onedrive.rs      # OneDrive accounts from the registry
 │   │   └── migemo.rs        # optional rustmigemo.dll next to the exe
 │   ├── ui/
 │   │   ├── toolbar.rs       # ToolbarWindow32 wrapper, glyph image lists
@@ -426,7 +427,7 @@ pub enum EnumEvent { Chunk(Vec<Entry>), Done, Failed(FsError) }
 
 ### 7.5 ナビゲーションツリー（`ui::navtree`）
 
-- 最上位の項目は、先頭から「ワークスペース」ノード・クイックアクセス・各ドライブ・ネットワーク・ごみ箱とする。
+- 最上位の項目は、先頭から「ワークスペース」ノード・ホーム・OneDrive（アカウントごと。§7.5.2）・PC・ネットワーク・ごみ箱とする。
 - ツリーの各ノードは、何を表すかを `NavTarget` で持つ。
 
   ```rust
@@ -884,6 +885,67 @@ impl Toolbar {
 - App 側で削除するもの: `App::new` の `SetMenu`、`main_proc` の `WM_INITMENUPOPUP` の分岐（`App::on_init_menu_popup` の呼び出し）、`on_command` の `menu.command_for` の分岐
 - シェルの右クリックメニュー用の `WM_INITMENUPOPUP` の転送（`context_menu::handle_menu_msg`）は `match` より前にあるので、そのまま残る。
 
+#### 7.5.2 OneDrive の項目（`shell::onedrive`）
+
+要求仕様 §3.2。OneDrive のアカウント情報はレジストリから読み、名前とアイコンはエクスプローラの名前空間の項目から取る。開く先は同期フォルダの実際のパスにする。
+
+##### アカウントの取得
+
+- OneDrive は、アカウントごとに `HKCU\Software\Microsoft\OneDrive\Accounts\<キー>` を作る。キーは `Personal`、`Business1`、`Business2`… で、ほかに `FileCoAuth` のようなアカウントでないキーもある。使う値は次の 3 つ。
+
+  | 値 | 内容 | 例 |
+  |---|---|---|
+  | `UserFolder` | 同期フォルダ | `C:\Users\me\OneDrive` |
+  | `NamespaceRootId` | エクスプローラのナビゲーションウィンドウに出る名前空間の項目の CLSID | `{018D5C66-4533-4307-9B53-224DE2ED1FE6}` |
+  | `DisplayName` | 職場または学校用の組織名（個人用にはない） | `Contoso` |
+
+- `UserFolder` が空、または存在しないフォルダのキーは使わない。これで、未設定の `Business1` や `FileCoAuth` も除かれる。
+
+```rust
+pub struct Account {
+    pub personal: bool,            // key == "Personal"
+    pub folder: String,            // UserFolder
+    pub namespace: Option<String>, // "::{CLSID}" from NamespaceRootId
+    pub org: Option<String>,       // DisplayName
+}
+
+/// Accounts that have an existing sync folder; empty when OneDrive is not set up or the
+/// registry cannot be read. Reads the registry and checks the folders (UI thread, idle time).
+pub fn accounts() -> Vec<Account>;
+
+/// Name used when the namespace item cannot be resolved (pure).
+pub fn fallback_name(a: &Account) -> String; // "OneDrive - Personal" / "OneDrive - Contoso" / "OneDrive"
+
+/// Personal first, then work or school accounts by `name` in natural order; drops later
+/// entries whose folder equals an earlier one (case-insensitive). Pure.
+pub fn order<T>(items: Vec<(Account, T)>, name: impl Fn(&T) -> &str) -> Vec<(Account, T)>;
+```
+
+- レジストリは `RegOpenKeyExW` / `RegEnumKeyExW` / `RegGetValueW`（`RRF_RT_REG_SZ`）で読む。キーが開けない・値が読めないといった失敗は、そのキー（またはすべて）を飛ばすだけで、エラーとして扱わない（要求仕様: 未設定なら何も通知しない）。
+
+##### ツリーへの追加（`ui::navtree`、`app::tree`）
+
+- `ROOTS` を、ホーム（`HOME_ROOT`）と、それより後ろの 3 つ（`TAIL_ROOTS`: PC・ネットワーク・ごみ箱）に分ける。
+- 最上位の項目を表す `NavRoot` を設け、`populate_roots` は OneDrive の項目を受け取る。
+
+  ```rust
+  pub struct NavRoot {
+      pub name: String,
+      pub location: Location, // the real sync folder
+      pub icon: i32,          // index in the system image list
+  }
+  pub fn populate_roots(&mut self, onedrive: &[NavRoot]); // workspace, home, onedrive..., tail roots
+  ```
+
+- `App::build_nav_tree` で `onedrive_roots()` を作って `populate_roots` に渡す。`onedrive_roots` は `shell::onedrive::accounts()` の各アカウントについて次のように名前とアイコンを決め、`order` で並べる。
+  - `namespace` を `Pidl::parse` できれば、その PIDL の `shell_display_name`（`SIGDN_NORMALDISPLAY`。例「OneDrive - Personal」、Windows 11 の環境によっては「（ユーザー名） - 個人用」）と `pidl_icon`（雲のアイコン）を使う。エクスプローラと同じ名前・アイコンになる。`shell_display_name` は `app::tree` から使うため `pub` にする。
+  - できなければ、名前は `fallback_name`、アイコンは同期フォルダの PIDL の `pidl_icon` にする。
+  - どちらの場合も、`location` は `Location::new(folder)`（実際のパス）にする。
+- 項目の `NavTarget` は、ほかのフォルダと同じ `NavTarget::Folder(location)` とし、子があるもの（展開ボタンあり）として挿入する。これで、選択したときの移動・展開したときの子の列挙・ドロップ先の判定（`location_at`）・右クリックは、既存のフォルダの項目の処理がそのまま使える。
+- 子の読み込みは非同期なので、`TVN_ITEMEXPANDING` の時点では子がなく、ツリーは展開されない。そのため `add_children` は、子を 1 つ以上挿入したら必ず `TVM_EXPAND` で親を展開する（以前は「PC」だけだったため、ほかのフォルダは 1 回目の展開で中身が出なかった）。読み込みが始まるのは、ユーザーが展開したときと、起動時に「PC」を開くときだけなので、常に展開してよい。
+- ツリーを作るのは最初のアイドル時（`WM_APP_IDLE_INIT`）なので、レジストリの読み込みとフォルダの存在確認は起動時間に影響しない。
+- 隠しファイル・ドットファイルを切り替えると、`apply_filter_change` が `nav.reset()` → `build_nav_tree()` でツリーを最上位から作り直す。このときも `accounts()` を読み直すので、起動後にサインイン・サインアウトしていれば、その時点で反映される。要求仕様では起動中の反映は求めていないが、読み直しは数個のレジストリ値とフォルダの確認だけなので、そのままにする。
+
 ## 8. 起動、単一インスタンス、コマンドライン
 
 ### 8.1 コマンドライン（`cli`）
@@ -1008,6 +1070,7 @@ strip = true
 | `ui::accel` | `format_key` と `parse_key` の往復（修飾キーの順・名前付きキー・F キー）、`key_for` が既定の割り当てを先に返すことと、`None` で外したときに次の割り当てを返すこと、キー指定の解析、既定の割り当て、`config.toml` による上書きと不正な指定の警告、編集中に横取りしないキー、一覧の中だけで効くキー（`is_list_only_key`、記号キーを含む）と hjkl・`/`・Esc の既定の割り当て、`"/"` の解析、文字の割り当て（`":"`）の解析と上書き・解除 |
 | `ui::format` | サイズ（KB 表記、人が読みやすい表記）、属性の表記 |
 | `shell::fileop` | 元に戻す操作の逆操作（名前の変更、移動、ドライブ直下への移動） |
+| `shell::onedrive` | `fallback_name`（個人用・組織名あり・組織名なし）、`order`（個人用が先頭、職場用が名前の自然順で `Business10` 相当が `Business2` 相当より後ろ、同じフォルダの重複は先の 1 つだけ残す、0 件） |
 | `shell::dragdrop` | ドロップ効果の決定（Ctrl・Shift、同じドライブかどうか、UNC、許可されていない効果） |
 
 ### 11.2 結合テスト（`tests/`、Windows 上で実行する）
@@ -1031,4 +1094,4 @@ strip = true
 
 ### 11.4 手動確認
 
-GUI の見た目と操作（ツールバーのアイコンの見た目・ツールチップ・フォーカスが動かないこと・Alt キーで何も起きないことを含む）、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）、`rustmigemo.dll` の読み込み（DLL と辞書は配布物にもリポジトリにも含めないため）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。
+GUI の見た目と操作（ナビゲーションツリーの OneDrive の項目、ツールバーのアイコンの見た目・ツールチップ・フォーカスが動かないこと・Alt キーで何も起きないことを含む）、シェル統合（右クリックメニュー・D&D・エクスプローラとのクリップボードのやり取り）、`rustmigemo.dll` の読み込み（DLL と辞書は配布物にもリポジトリにも含めないため）は自動テストの対象にしない。`doc/plan.md` に確認手順を書き、手で確かめる。

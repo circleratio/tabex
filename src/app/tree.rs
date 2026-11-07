@@ -7,8 +7,38 @@ use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use super::*;
+use crate::fs::enumerate::Pidl;
 use crate::model::command::Command;
-use crate::ui::navtree::NavTarget;
+use crate::shell::onedrive;
+use crate::ui::navtree::{NavRoot, NavTarget, shell_display_name};
+
+/// One tree item per OneDrive account: Explorer's name and icon from the namespace item,
+/// opening the real sync folder.
+fn onedrive_roots() -> Vec<NavRoot> {
+    let items = onedrive::accounts()
+        .into_iter()
+        .map(|a| {
+            let ns = a.namespace.as_deref().and_then(|n| Pidl::parse(n).ok());
+            let name = ns
+                .as_ref()
+                .and_then(shell_display_name)
+                .unwrap_or_else(|| onedrive::fallback_name(&a));
+            let icon = ns
+                .or_else(|| Pidl::parse(&a.folder).ok())
+                .map_or(0, |p| crate::shell::icons::pidl_icon(p.as_ptr()));
+            let root = NavRoot {
+                name,
+                location: Location::new(a.folder.clone()),
+                icon,
+            };
+            (a, root)
+        })
+        .collect();
+    onedrive::order(items, |r| r.name.as_str())
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect()
+}
 
 impl App {
     pub fn load_nav_children(&mut self, node: usize) {
@@ -27,7 +57,7 @@ impl App {
 
     /// Fill the tree from the roots and expand "This PC".
     pub fn build_nav_tree(&mut self) {
-        self.nav.populate_roots();
+        self.nav.populate_roots(&onedrive_roots());
         self.refresh_nav_workspaces();
         self.nav.expand_workspaces(self.config.nav_workspaces_expanded);
         if let Some(node) = self.nav.expand_this_pc() {
