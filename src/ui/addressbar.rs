@@ -2,7 +2,6 @@
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -18,67 +17,35 @@ const BTN_W: i32 = 30;
 const SUBCLASS_ID: usize = 1;
 
 pub fn register(instance: HINSTANCE, cursor: HCURSOR) -> Result<()> {
-    let wc = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
-        hInstance: instance,
-        lpszClassName: CLASS,
-        lpfnWndProc: Some(proc_),
-        hCursor: cursor,
-        ..Default::default()
-    };
-    unsafe { RegisterClassW(&wc) };
+    super::register_class(instance, CLASS, Some(proc_), cursor, CS_HREDRAW | CS_VREDRAW);
     Ok(())
 }
 
 /// Returns (address bar window, edit control).
 pub fn create(parent: HWND, side: PaneSide, edit_id: i32, font: HFONT) -> Result<(HWND, HWND)> {
+    let bar = super::create_child(
+        parent,
+        CLASS,
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        WINDOW_EX_STYLE::default(),
+        0,
+    )?;
+    super::set_bar_side(bar, side);
+    let edit = super::create_child(
+        bar,
+        w!("EDIT"),
+        PCWSTR::null(),
+        WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        WINDOW_EX_STYLE::default(),
+        edit_id,
+    )?;
+    super::set_font(edit, font);
     unsafe {
-        let bar = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            CLASS,
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            None,
-            None,
-            None,
-        )?;
-        SetWindowLongPtrW(bar, GWLP_USERDATA, side.index() as isize);
-        let edit = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            w!("EDIT"),
-            PCWSTR::null(),
-            WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            0,
-            0,
-            0,
-            0,
-            Some(bar),
-            Some(HMENU(edit_id as usize as *mut _)),
-            None,
-            None,
-        )?;
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         let _ = SHAutoComplete(edit, SHACF_FILESYS_DIRS | SHACF_USETAB);
         let _ = SetWindowSubclass(edit, Some(edit_proc), SUBCLASS_ID, bar.0 as usize);
-        Ok((bar, edit))
     }
-}
-
-fn side_of(hwnd: HWND) -> PaneSide {
-    if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 1 {
-        PaneSide::Right
-    } else {
-        PaneSide::Left
-    }
-}
-
-fn app_of(hwnd: HWND) -> Option<&'static mut App> {
-    App::from_hwnd(unsafe { GetParent(hwnd).ok()? })
+    Ok((bar, edit))
 }
 
 struct Geometry {
@@ -156,12 +123,10 @@ fn paint(hwnd: HWND, app: &App) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut ps);
-        let side = side_of(hwnd);
+        let side = super::bar_side(hwnd);
         let client = super::client_rect(hwnd);
         let g = geometry(hwnd, app.dpi);
-        let face = CreateSolidBrush(COLORREF(GetSysColor(COLOR_BTNFACE)));
-        FillRect(hdc, &super::to_win(client), face);
-        let _ = DeleteObject(face.into());
+        super::fill_rect(hdc, client, COLORREF(GetSysColor(COLOR_BTNFACE)));
         let old = SelectObject(hdc, app.font.into());
         SetBkMode(hdc, TRANSPARENT);
         let tab = app.panes[side.index()].shown.and_then(|id| app.tab(id));
@@ -173,15 +138,11 @@ fn paint(hwnd: HWND, app: &App) {
                 hdc,
                 COLORREF(GetSysColor(if enabled { COLOR_BTNTEXT } else { COLOR_GRAYTEXT })),
             );
-            let mut w: Vec<u16> = glyph.encode_utf16().collect();
-            let mut rc = super::to_win(r);
-            DrawTextW(hdc, &mut w, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            super::draw_text(hdc, glyph, r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         // Field background and border (red after a failed path entry).
         let field = super::to_win(g.field);
-        let bg = CreateSolidBrush(COLORREF(GetSysColor(COLOR_WINDOW)));
-        FillRect(hdc, &field, bg);
-        let _ = DeleteObject(bg.into());
+        super::fill_rect(hdc, g.field, COLORREF(GetSysColor(COLOR_WINDOW)));
         let border = if app.panes[side.index()].addr_error {
             COLORREF(0x0000_20D0)
         } else {
@@ -195,12 +156,10 @@ fn paint(hwnd: HWND, app: &App) {
             let list = crumbs(hdc, app, side, g.field);
             let sep_w = scale(14, app.dpi);
             for (i, (_, label, r)) in list.iter().enumerate() {
-                let mut w: Vec<u16> = label.encode_utf16().collect();
-                let mut rc = super::to_win(*r);
-                DrawTextW(
+                super::draw_text(
                     hdc,
-                    &mut w,
-                    &mut rc,
+                    label,
+                    *r,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
                 );
                 let is_fs = app.panes[side.index()]
@@ -208,10 +167,13 @@ fn paint(hwnd: HWND, app: &App) {
                     .and_then(|id| app.tab(id))
                     .is_some_and(|t| t.location.is_file_system());
                 if i + 1 < list.len() || (list.len() == 1 && is_fs) {
-                    let mut sep: Vec<u16> = "›".encode_utf16().collect();
-                    let mut rc = super::to_win(Rect::new(r.right, r.top, r.right + sep_w, r.bottom));
                     SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
-                    DrawTextW(hdc, &mut sep, &mut rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    super::draw_text(
+                        hdc,
+                        "›",
+                        Rect::new(r.right, r.top, r.right + sep_w, r.bottom),
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                    );
                     SetTextColor(hdc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
                 }
             }
@@ -241,15 +203,15 @@ pub fn begin_edit(app: &mut App, side: PaneSide) {
             SWP_NOZORDER | SWP_SHOWWINDOW,
         );
         let _ = SetFocus(Some(p.edit));
-        SendMessageW(p.edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+        super::set_edit_sel(p.edit, 0, -1);
         let _ = InvalidateRect(Some(p.address), None, false);
     }
     app.set_active_pane(side);
 }
 
 fn end_edit(bar: HWND, commit: bool) {
-    let Some(app) = app_of(bar) else { return };
-    let side = side_of(bar);
+    let Some(app) = super::parent_app(bar) else { return };
+    let side = super::bar_side(bar);
     let edit = app.panes[side.index()].edit;
     if commit {
         let text = super::window_text(edit);
@@ -314,17 +276,17 @@ fn subfolder_menu(bar: HWND, app: &mut App, loc: &Location, x: i32, y: i32) {
         let _ = ClientToScreen(bar, &mut pt);
     }
     if let Some(cmd) = app.menu.track(bar, items, pt.x, pt.y) {
-        app.set_active_pane(side_of(bar));
+        app.set_active_pane(super::bar_side(bar));
         app.execute(cmd);
     }
 }
 
 extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        let Some(app) = app_of(hwnd) else {
+        let Some(app) = super::parent_app(hwnd) else {
             return DefWindowProcW(hwnd, msg, wp, lp);
         };
-        let side = side_of(hwnd);
+        let side = super::bar_side(hwnd);
         match msg {
             WM_PAINT => {
                 paint(hwnd, app);
@@ -392,7 +354,7 @@ extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: 
             }
             WM_KEYDOWN if VIRTUAL_KEY(wp.0 as u16) == VK_ESCAPE => {
                 end_edit(bar, false);
-                if let Some(app) = app_of(bar) {
+                if let Some(app) = super::parent_app(bar) {
                     app.focus_active_list();
                 }
                 LRESULT(0)

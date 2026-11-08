@@ -2,7 +2,6 @@
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -21,75 +20,34 @@ const COUNT_W: i32 = 120;
 const MIGEMO_W: i32 = 56;
 
 pub fn register(instance: HINSTANCE, cursor: HCURSOR) -> Result<()> {
-    let wc = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
-        hInstance: instance,
-        lpszClassName: CLASS,
-        lpfnWndProc: Some(proc_),
-        hCursor: cursor,
-        ..Default::default()
-    };
-    unsafe { RegisterClassW(&wc) };
+    super::register_class(instance, CLASS, Some(proc_), cursor, CS_HREDRAW | CS_VREDRAW);
     Ok(())
 }
 
 /// Returns (bar window, edit control). Both start hidden.
 pub fn create(parent: HWND, side: PaneSide, edit_id: i32, font: HFONT) -> Result<(HWND, HWND)> {
+    let bar = super::create_child(
+        parent,
+        CLASS,
+        PCWSTR::null(),
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        WINDOW_EX_STYLE::default(),
+        0,
+    )?;
+    super::set_bar_side(bar, side);
+    let edit = super::create_child(
+        bar,
+        w!("EDIT"),
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
+        WINDOW_EX_STYLE::default(),
+        edit_id,
+    )?;
+    super::set_font(edit, font);
     unsafe {
-        let bar = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            CLASS,
-            PCWSTR::null(),
-            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            None,
-            None,
-            None,
-        )?;
-        SetWindowLongPtrW(bar, GWLP_USERDATA, side.index() as isize);
-        let edit = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            w!("EDIT"),
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            0,
-            0,
-            0,
-            0,
-            Some(bar),
-            Some(HMENU(edit_id as usize as *mut _)),
-            None,
-            None,
-        )?;
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         let _ = SetWindowSubclass(edit, Some(edit_proc), SUBCLASS_ID, bar.0 as usize);
-        Ok((bar, edit))
     }
-}
-
-fn side_of(hwnd: HWND) -> PaneSide {
-    if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 1 {
-        PaneSide::Right
-    } else {
-        PaneSide::Left
-    }
-}
-
-fn app_of(bar: HWND) -> Option<&'static mut App> {
-    App::from_hwnd(unsafe { GetParent(bar).ok()? })
-}
-
-pub fn text(edit: HWND) -> String {
-    unsafe {
-        let n = GetWindowTextLengthW(edit).max(0) as usize;
-        let mut buf = vec![0u16; n + 1];
-        let got = GetWindowTextW(edit, &mut buf).max(0) as usize;
-        String::from_utf16_lossy(&buf[..got])
-    }
+    Ok((bar, edit))
 }
 
 /// Replace the edit text and put the caret at the end.
@@ -101,10 +59,8 @@ pub fn set_text(edit: HWND, s: &str) {
 }
 
 pub fn caret_to_end(edit: HWND) {
-    unsafe {
-        let n = GetWindowTextLengthW(edit).max(0) as usize;
-        SendMessageW(edit, EM_SETSEL, Some(WPARAM(n)), Some(LPARAM(n as isize)));
-    }
+    let n = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
+    super::set_edit_sel(edit, n, n as isize);
 }
 
 struct Geometry {
@@ -168,21 +124,21 @@ fn paint(hwnd: HWND, app: &App, side: PaneSide) {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
         let g = geometry(hwnd, app.dpi, font_height(hwnd, app.font), app.migemo_active(side));
-        let mut prompt = super::to_win(g.prompt);
         let command = app.command_line[side.index()];
-        let mut mark: Vec<u16> = if command { ":" } else { "/" }.encode_utf16().collect();
-        DrawTextW(hdc, &mut mark, &mut prompt, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        let mark = if command { ":" } else { "/" };
+        super::draw_text(hdc, mark, g.prompt, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if !command && let Some((n, m)) = app.narrow_counts(side) {
-            let mut count = super::to_win(g.count);
-            let mut s: Vec<u16> = format!("{n} / {m} 件").encode_utf16().collect();
             SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
-            DrawTextW(hdc, &mut s, &mut count, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+            super::draw_text(
+                hdc,
+                &format!("{n} / {m} 件"),
+                g.count,
+                DT_SINGLELINE | DT_VCENTER | DT_RIGHT,
+            );
         }
         if let Some(m) = g.migemo {
-            let mut r = super::to_win(m);
-            let mut s: Vec<u16> = "migemo".encode_utf16().collect();
             SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
-            DrawTextW(hdc, &mut s, &mut r, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
+            super::draw_text(hdc, "migemo", m, DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
         }
         SelectObject(hdc, old);
         let _ = EndPaint(hwnd, &ps);
@@ -191,10 +147,10 @@ fn paint(hwnd: HWND, app: &App, side: PaneSide) {
 
 extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        let Some(app) = app_of(hwnd) else {
+        let Some(app) = super::parent_app(hwnd) else {
             return DefWindowProcW(hwnd, msg, wp, lp);
         };
-        let side = side_of(hwnd);
+        let side = super::bar_side(hwnd);
         match msg {
             WM_PAINT => {
                 paint(hwnd, app, side);
@@ -231,11 +187,11 @@ extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
 extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, bar: usize) -> LRESULT {
     unsafe {
         let bar = HWND(bar as *mut _);
-        let side = side_of(bar);
+        let side = super::bar_side(bar);
         let empty = || GetWindowTextLengthW(hwnd) == 0;
         match msg {
             WM_KEYDOWN => {
-                let Some(app) = app_of(bar) else {
+                let Some(app) = super::parent_app(bar) else {
                     return DefSubclassProc(hwnd, msg, wp, lp);
                 };
                 let command = app.command_line[side.index()];
@@ -256,7 +212,7 @@ extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: 
             // Swallow the characters of keys handled above so the edit does not beep.
             WM_CHAR if wp.0 == 0x0D || wp.0 == 0x1B || (wp.0 == 0x08 && empty()) => LRESULT(0),
             WM_SETFOCUS => {
-                if let Some(app) = app_of(bar) {
+                if let Some(app) = super::parent_app(bar) {
                     app.set_active_pane(side);
                 }
                 DefSubclassProc(hwnd, msg, wp, lp)

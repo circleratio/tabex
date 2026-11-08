@@ -161,9 +161,7 @@ impl App {
             Some(i) if i > 0 && !is_dir => text[..i].encode_utf16().count(),
             _ => text.encode_utf16().count(),
         };
-        unsafe {
-            SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(end as isize)));
-        }
+        ui::set_edit_sel(edit, 0, end as isize);
     }
 
     fn shown_listing_entry(&self, list: HWND, pos: usize) -> Option<&crate::model::listing::Entry> {
@@ -360,18 +358,7 @@ impl App {
             .is_some_and(|l| l.selection_count() > 0);
         let mut pt = POINT::default();
         if let Some(pos) = listview::focused(list) {
-            let mut rc = RECT {
-                left: LVIR_LABEL as i32,
-                ..Default::default()
-            };
-            unsafe {
-                SendMessageW(
-                    list,
-                    LVM_GETITEMRECT,
-                    Some(WPARAM(pos)),
-                    Some(LPARAM(&mut rc as *mut _ as isize)),
-                );
-            }
+            let rc = listview::item_rect(list, pos, LVIR_LABEL);
             pt = POINT {
                 x: rc.left + 8,
                 y: rc.bottom,
@@ -511,19 +498,7 @@ impl App {
                 let generation = self.rt.get(&id).map(|r| r.generation).unwrap_or(0);
                 if let Some(b) = self.thumbnail_for(id, generation, &dir, &e, px) {
                     let list = self.panes[side.index()].list;
-                    let mut rc = RECT {
-                        left: LVIR_ICON as i32,
-                        ..Default::default()
-                    };
-                    unsafe {
-                        SendMessageW(
-                            list,
-                            LVM_GETITEMRECT,
-                            Some(WPARAM(pos)),
-                            Some(LPARAM(&mut rc as *mut _ as isize)),
-                        );
-                    }
-                    thumbs::draw(cd.nmcd.hdc, b, rc);
+                    thumbs::draw(cd.nmcd.hdc, b, listview::item_rect(list, pos, LVIR_ICON));
                 }
             }
         }
@@ -569,17 +544,12 @@ impl DropHost for AppDrop {
             unsafe {
                 let _ = ScreenToClient(target, &mut pt);
             }
-            let mut hit = LVHITTESTINFO {
-                pt,
-                ..Default::default()
-            };
-            let idx = unsafe { SendMessageW(target, LVM_HITTEST, None, Some(LPARAM(&mut hit as *mut _ as isize))) }.0;
-            if idx >= 0
+            if let Some(idx) = listview::hit_test(target, pt)
                 && let Some(e) = app
                     .rt
                     .get(&id)
                     .and_then(|r| r.listing.as_ref())
-                    .and_then(|l| l.get(idx as usize))
+                    .and_then(|l| l.get(idx))
                 && e.is_dir()
             {
                 return Some(crate::fs::join(tab.location.as_str(), &e.name_string()));

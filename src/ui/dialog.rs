@@ -9,7 +9,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-use super::send;
 use crate::model::layout::scale;
 
 /// Where a dialog goes relative to its owner.
@@ -118,7 +117,7 @@ impl Dialog {
                 None,
             )
             .unwrap_or_default();
-            send(c, WM_SETFONT, self.font.0 as usize, 1);
+            super::set_font(c, self.font);
             c
         }
     }

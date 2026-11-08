@@ -347,22 +347,14 @@ impl App {
         }
         let panes: [PaneUi; 2] = panes.try_into().ok().unwrap();
         let nav = NavTree::create(hwnd, ID_TREE, lists.small)?;
-        let status = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                STATUSCLASSNAMEW,
-                PCWSTR::null(),
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE((CCS_NOPARENTALIGN | CCS_NORESIZE) as u32),
-                0,
-                0,
-                0,
-                0,
-                Some(hwnd),
-                Some(HMENU(ID_STATUS as usize as *mut _)),
-                None,
-                None,
-            )?
-        };
+        let status = ui::create_child(
+            hwnd,
+            STATUSCLASSNAMEW,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE((CCS_NOPARENTALIGN | CCS_NORESIZE) as u32),
+            WINDOW_EX_STYLE::default(),
+            ID_STATUS,
+        )?;
         let toolbar = ui::toolbar::Toolbar::create(hwnd, ID_TOOLBAR, ID_TOOLBAR_END, dpi)?;
         let (notifier, inbox) = worker::channel_for::<WorkerMsg>(hwnd);
         let wn = notifier.clone();
@@ -432,9 +424,7 @@ impl App {
     }
 
     pub fn apply_font(&self) {
-        let set = |h: HWND| unsafe {
-            SendMessageW(h, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), Some(LPARAM(1)));
-        };
+        let set = |h: HWND| ui::set_font(h, self.font);
         for p in &self.panes {
             for h in [p.list, p.edit, p.filter_edit, p.msg, p.retry, p.parent_btn] {
                 set(h);
@@ -528,7 +518,7 @@ impl App {
 
     pub fn update_status(&self) {
         let set = |i: usize, s: &str| unsafe {
-            let w = ui::wz(s);
+            let w = crate::fs::wide_z(s);
             SendMessageW(
                 self.status,
                 SB_SETTEXTW,

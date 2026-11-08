@@ -185,22 +185,14 @@ fn image_list(size: i32, color: COLORREF) -> HIMAGELIST {
 /// One ToolbarWindow32 holding the buttons with `end == at_end`.
 fn create_bar(parent: HWND, id: i32, at_end: bool) -> Result<HWND> {
     let style = TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_NODIVIDER as u32 | CCS_NOPARENTALIGN as u32 | CCS_NORESIZE as u32;
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            TOOLBARCLASSNAMEW,
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            Some(HMENU(id as usize as *mut _)),
-            None,
-            None,
-        )?
-    };
+    let hwnd = super::create_child(
+        parent,
+        TOOLBARCLASSNAMEW,
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
+        WINDOW_EX_STYLE::default(),
+        id,
+    )?;
     send(hwnd, TB_BUTTONSTRUCTSIZE, std::mem::size_of::<TBBUTTON>(), 0);
     let mut buttons = Vec::new();
     let mut prev_group = None;
@@ -358,7 +350,7 @@ impl Toolbar {
     }
 
     pub fn set_tip(&mut self, text: &str) -> PWSTR {
-        self.tip = text.encode_utf16().chain(std::iter::once(0)).collect();
+        self.tip = crate::fs::wide_z(text);
         PWSTR(self.tip.as_mut_ptr())
     }
 }

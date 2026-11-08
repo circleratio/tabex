@@ -19,49 +19,27 @@ const SCROLL_W: i32 = 22;
 const DRAG_THRESHOLD: i32 = 6;
 
 pub fn register(instance: HINSTANCE, cursor: HCURSOR) -> Result<()> {
-    let wc = WNDCLASSW {
-        style: CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW,
-        hInstance: instance,
-        lpszClassName: CLASS,
-        lpfnWndProc: Some(proc_),
-        hCursor: cursor,
-        ..Default::default()
-    };
-    unsafe { RegisterClassW(&wc) };
+    super::register_class(
+        instance,
+        CLASS,
+        Some(proc_),
+        cursor,
+        CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW,
+    );
     Ok(())
 }
 
 pub fn create(parent: HWND, side: PaneSide) -> Result<HWND> {
-    unsafe {
-        let h = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            CLASS,
-            PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            None,
-            None,
-            None,
-        )?;
-        SetWindowLongPtrW(h, GWLP_USERDATA, side.index() as isize);
-        Ok(h)
-    }
-}
-
-fn side_of(hwnd: HWND) -> PaneSide {
-    if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 1 {
-        PaneSide::Right
-    } else {
-        PaneSide::Left
-    }
-}
-
-fn app_of(hwnd: HWND) -> Option<&'static mut App> {
-    App::from_hwnd(unsafe { GetParent(hwnd).ok()? })
+    let h = super::create_child(
+        parent,
+        CLASS,
+        PCWSTR::null(),
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        WINDOW_EX_STYLE::default(),
+        0,
+    )?;
+    super::set_bar_side(h, side);
+    Ok(h)
 }
 
 /// Scroll offset (first visible tab) per tab bar, kept in a window property.
@@ -83,7 +61,7 @@ struct Geometry {
 }
 
 fn geometry(hwnd: HWND, app: &App) -> Geometry {
-    let side = side_of(hwnd);
+    let side = super::bar_side(hwnd);
     let client = super::client_rect(hwnd);
     let s = |v| scale(v, app.dpi);
     let n = app.ws.pane(side).tabs.len();
@@ -190,20 +168,8 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
 
-fn fill(hdc: HDC, r: Rect, c: COLORREF) {
-    unsafe {
-        let br = CreateSolidBrush(c);
-        FillRect(hdc, &super::to_win(r), br);
-        let _ = DeleteObject(br.into());
-    }
-}
-
 fn text(hdc: HDC, s: &str, r: Rect, flags: DRAW_TEXT_FORMAT) {
-    let mut w: Vec<u16> = s.encode_utf16().collect();
-    let mut rc = super::to_win(r);
-    unsafe {
-        DrawTextW(hdc, &mut w, &mut rc, flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-    }
+    super::draw_text(hdc, s, r, flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 }
 
 fn paint(hwnd: HWND, app: &App) {
@@ -217,11 +183,11 @@ fn paint(hwnd: HWND, app: &App) {
         let old_font = SelectObject(mem, app.font.into());
         SetBkMode(mem, TRANSPARENT);
 
-        let side = side_of(hwnd);
+        let side = super::bar_side(hwnd);
         let pane_active = app.ws.active_pane == side && app.ws.layout == crate::model::workspace::Layout::Dual
             || app.ws.layout == crate::model::workspace::Layout::Single;
         let face = GetSysColor(COLOR_BTNFACE);
-        fill(mem, client, COLORREF(face));
+        super::fill_rect(mem, client, COLORREF(face));
         let g = geometry(hwnd, app);
         let pane = app.ws.pane(side);
         let s = |v| scale(v, app.dpi);
@@ -231,12 +197,12 @@ fn paint(hwnd: HWND, app: &App) {
             let active = *i == pane.active_tab;
             let body = Rect::new(r.left + 1, r.top, r.right - 1, r.bottom);
             if active {
-                fill(mem, body, COLORREF(GetSysColor(COLOR_WINDOW)));
+                super::fill_rect(mem, body, COLORREF(GetSysColor(COLOR_WINDOW)));
                 if pane_active {
-                    fill(mem, Rect::new(body.left, body.top, body.right, body.top + s(3)), accent);
+                    super::fill_rect(mem, Rect::new(body.left, body.top, body.right, body.top + s(3)), accent);
                 }
             } else {
-                fill(
+                super::fill_rect(
                     mem,
                     Rect::new(body.right - 1, body.top + s(6), body.right, body.bottom - s(6)),
                     rgb(0xc0, 0xc0, 0xc0),
@@ -293,7 +259,7 @@ fn paint(hwnd: HWND, app: &App) {
                 .map(|(_, r)| r.left)
                 .or_else(|| g.tabs.last().map(|(_, r)| r.right))
                 .unwrap_or(client.left + s(2));
-            fill(
+            super::fill_rect(
                 mem,
                 Rect::new(x - s(1), client.top + s(2), x + s(2), client.bottom),
                 accent,
@@ -309,7 +275,7 @@ fn paint(hwnd: HWND, app: &App) {
 }
 
 fn tab_menu(hwnd: HWND, app: &mut App, idx: usize, x: i32, y: i32) {
-    let side = side_of(hwnd);
+    let side = super::bar_side(hwnd);
     let other = if side == PaneSide::Left { "右" } else { "左" };
     let to_end = app.ws.pane(side.other()).tabs.len();
     let items = vec![
@@ -364,10 +330,10 @@ fn drop_target(app: &App, sx: i32, sy: i32) -> Option<(PaneSide, usize)> {
 
 extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        let Some(app) = app_of(hwnd) else {
+        let Some(app) = super::parent_app(hwnd) else {
             return DefWindowProcW(hwnd, msg, wp, lp);
         };
-        let side = side_of(hwnd);
+        let side = super::bar_side(hwnd);
         match msg {
             WM_PAINT => {
                 paint(hwnd, app);

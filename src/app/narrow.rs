@@ -94,7 +94,7 @@ impl App {
         let (bar, edit) = (p.filter_bar, p.filter_edit);
         let was_visible = unsafe { IsWindowVisible(bar).as_bool() };
         if let Some(t) = &text
-            && filterbar::text(edit) != *t
+            && ui::window_text(edit) != *t
         {
             self.set_bar_text(edit, t);
         }
@@ -140,7 +140,7 @@ impl App {
 
     /// Enter in the command line: close it and run what was typed.
     pub fn command_line_enter(&mut self, side: PaneSide) {
-        let text = filterbar::text(self.panes[side.index()].filter_edit);
+        let text = ui::window_text(self.panes[side.index()].filter_edit);
         self.command_line_close(side);
         match crate::model::cmdline::parse(&text) {
             Ok(None) => {}
@@ -210,7 +210,7 @@ impl App {
         if self.narrow_syncing || self.command_line[side.index()] {
             return;
         }
-        let text = filterbar::text(self.panes[side.index()].filter_edit);
+        let text = ui::window_text(self.panes[side.index()].filter_edit);
         let Some(id) = self.panes[side.index()].shown else {
             return;
         };

@@ -100,7 +100,7 @@ fn refill() {
         unsafe {
             SendMessageW(s.list, LB_RESETCONTENT, None, None);
             for n in &s.shown {
-                let w = super::wz(n);
+                let w = crate::fs::wide_z(n);
                 SendMessageW(s.list, LB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
             }
             SendMessageW(s.list, LB_SETCURSEL, Some(WPARAM(0)), None);
@@ -209,9 +209,9 @@ pub fn show(app: &mut App) {
         )
         .unwrap_or_default();
         for c in [filter, list] {
-            SendMessageW(c, WM_SETFONT, Some(WPARAM(app.font.0 as usize)), Some(LPARAM(1)));
+            super::set_font(c, app.font);
         }
-        let cue = super::wz("名前で絞り込み");
+        let cue = crate::fs::wide_z("名前で絞り込み");
         SendMessageW(
             filter,
             EM_SETCUEBANNER,
@@ -338,7 +338,7 @@ pub fn prompt(
     dlg.default_button("OK", (212, 100, 86, 28), ID_OK);
     dlg.button("キャンセル", (306, 100, 86, 28), ID_CANCEL);
     unsafe {
-        SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+        super::set_edit_sel(edit, 0, -1);
         SHAutoComplete(edit, SHACF_AUTOSUGGEST_FORCE_OFF | SHACF_AUTOAPPEND_FORCE_OFF).ok();
     }
     PROMPT.with(|p| {

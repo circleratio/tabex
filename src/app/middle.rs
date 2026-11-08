@@ -1,7 +1,6 @@
 //! Middle-click on a folder (file list or navigation tree) opens it in a background tab.
 
 use windows::Win32::Foundation::*;
-use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -28,18 +27,11 @@ impl App {
 
     fn folder_at(&self, hwnd: HWND, x: i32, y: i32) -> Option<(PaneSide, Location)> {
         if let Some(side) = self.side_of_list(hwnd) {
-            let mut hit = LVHITTESTINFO {
-                pt: POINT { x, y },
-                ..Default::default()
-            };
-            let idx = unsafe { SendMessageW(hwnd, LVM_HITTEST, None, Some(LPARAM(&mut hit as *mut _ as isize))) }.0;
-            if idx < 0 {
-                return None;
-            }
+            let idx = crate::ui::listview::hit_test(hwnd, POINT { x, y })?;
             let id = self.panes[side.index()].shown?;
             let tab = self.tab(id)?;
             let rt = self.rt.get(&id)?;
-            let e = rt.listing.as_ref()?.get(idx as usize)?;
+            let e = rt.listing.as_ref()?.get(idx)?;
             if !e.is_dir() {
                 return None;
             }

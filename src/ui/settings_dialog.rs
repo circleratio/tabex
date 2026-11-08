@@ -111,7 +111,7 @@ fn label_of(name: &str) -> &'static str {
 
 fn lv_columns(lv: HWND, cols: &[(&str, i32)], dpi: u32) {
     for (i, (title, width)) in cols.iter().enumerate() {
-        let mut t: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut t = crate::fs::wide_z(title);
         let col = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH,
             cx: scale(*width, dpi),
@@ -132,7 +132,7 @@ fn lv_fill(lv: HWND, rows: &[Vec<String>]) {
     send(lv, LVM_DELETEALLITEMS, 0, 0);
     for (i, row) in rows.iter().enumerate() {
         for (j, text) in row.iter().enumerate() {
-            let mut t: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut t = crate::fs::wide_z(text);
             let item = LVITEMW {
                 mask: LVIF_TEXT,
                 iItem: i as i32,
@@ -596,7 +596,7 @@ fn create(main: HWND, font: HFONT, page: usize, baseline: UserSettings) -> Optio
     // Page headers only; the pages live on the dialog background below them.
     let tab = dlg.child(WC_TABCONTROLW, "", tabstop, none, (12, 12, 536, 30), ID_TAB);
     for (i, p) in PAGES.iter().enumerate() {
-        let mut t: Vec<u16> = p.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut t = crate::fs::wide_z(p);
         let item = TCITEMW {
             mask: TCIF_TEXT,
             pszText: PWSTR(t.as_mut_ptr()),

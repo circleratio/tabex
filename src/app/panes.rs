@@ -21,60 +21,52 @@ use crate::ui::listview;
 
 pub fn create_pane_ui(main: HWND, side: PaneSide, font: HFONT) -> Result<PaneUi> {
     let i = side.index();
-    unsafe {
-        let tabbar = ui::tabbar::create(main, side)?;
-        let (address, edit) = ui::addressbar::create(main, side, ID_EDIT[i], font)?;
-        let list = listview::create(main, ID_LIST[i])?;
-        let (filter_bar, filter_edit) = ui::filterbar::create(main, side, ID_FILTER_EDIT[i], font)?;
-        let mk = |class: PCWSTR, text: PCWSTR, style: u32, id: i32| {
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                class,
-                text,
-                WS_CHILD | WS_CLIPSIBLINGS | WINDOW_STYLE(style),
-                0,
-                0,
-                0,
-                0,
-                Some(main),
-                Some(HMENU(id as usize as *mut _)),
-                None,
-                None,
-            )
-        };
-        let msg = mk(
-            w!("STATIC"),
-            w!(""),
-            windows::Win32::System::SystemServices::SS_CENTER.0,
-            0,
-        )?;
-        let retry = mk(
-            w!("BUTTON"),
-            w!("再試行"),
-            (BS_PUSHBUTTON | WS_TABSTOP.0 as i32) as u32,
-            ID_RETRY[i],
-        )?;
-        let parent_btn = mk(
-            w!("BUTTON"),
-            w!("親フォルダへ"),
-            (BS_PUSHBUTTON | WS_TABSTOP.0 as i32) as u32,
-            ID_PARENT[i],
-        )?;
-        Ok(PaneUi {
-            tabbar,
-            address,
-            edit,
-            list,
-            msg,
-            retry,
-            parent_btn,
-            filter_bar,
-            filter_edit,
-            shown: None,
-            rects: None,
-            addr_error: false,
-        })
-    }
+    let tabbar = ui::tabbar::create(main, side)?;
+    let (address, edit) = ui::addressbar::create(main, side, ID_EDIT[i], font)?;
+    let list = listview::create(main, ID_LIST[i])?;
+    let (filter_bar, filter_edit) = ui::filterbar::create(main, side, ID_FILTER_EDIT[i], font)?;
+    let mk = |class: PCWSTR, text: PCWSTR, style: u32, id: i32| {
+        ui::create_child(
+            main,
+            class,
+            text,
+            WS_CHILD | WS_CLIPSIBLINGS | WINDOW_STYLE(style),
+            WINDOW_EX_STYLE::default(),
+            id,
+        )
+    };
+    let msg = mk(
+        w!("STATIC"),
+        w!(""),
+        windows::Win32::System::SystemServices::SS_CENTER.0,
+        0,
+    )?;
+    let retry = mk(
+        w!("BUTTON"),
+        w!("再試行"),
+        (BS_PUSHBUTTON | WS_TABSTOP.0 as i32) as u32,
+        ID_RETRY[i],
+    )?;
+    let parent_btn = mk(
+        w!("BUTTON"),
+        w!("親フォルダへ"),
+        (BS_PUSHBUTTON | WS_TABSTOP.0 as i32) as u32,
+        ID_PARENT[i],
+    )?;
+    Ok(PaneUi {
+        tabbar,
+        address,
+        edit,
+        list,
+        msg,
+        retry,
+        parent_btn,
+        filter_bar,
+        filter_edit,
+        shown: None,
+        rects: None,
+        addr_error: false,
+    })
 }
 
 /// Explorer's "This PC".

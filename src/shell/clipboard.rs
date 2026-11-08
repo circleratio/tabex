@@ -35,7 +35,7 @@ pub fn selection(location: &str, names: &[String], raw: &[Box<[u8]>]) -> Result<
     let mut children = Vec::new();
     for n in names {
         let mut pidl = std::ptr::null_mut();
-        let mut wide: Vec<u16> = n.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut wide = crate::fs::wide_z(n);
         unsafe {
             folder.ParseDisplayName(
                 HWND::default(),

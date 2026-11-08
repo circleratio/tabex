@@ -5,6 +5,7 @@ use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
+use super::send;
 use crate::model::layout::scale;
 use crate::model::listing::Listing;
 use crate::model::workspace::*;
@@ -17,27 +18,16 @@ pub fn create(parent: HWND, id: i32) -> Result<HWND> {
             | WS_CLIPSIBLINGS
             | WS_TABSTOP
             | WINDOW_STYLE(LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_EDITLABELS | LVS_SHAREIMAGELISTS);
-        let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+        let hwnd = super::create_child(
+            parent,
             WC_LISTVIEWW,
             PCWSTR::null(),
             style,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            Some(HMENU(id as usize as *mut _)),
-            None,
-            None,
+            WINDOW_EX_STYLE::default(),
+            id,
         )?;
         let ex = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_HEADERDRAGDROP | LVS_EX_LABELTIP;
-        SendMessageW(
-            hwnd,
-            LVM_SETEXTENDEDLISTVIEWSTYLE,
-            Some(WPARAM(ex as usize)),
-            Some(LPARAM(ex as isize)),
-        );
+        send(hwnd, LVM_SETEXTENDEDLISTVIEWSTYLE, ex as usize, ex as isize);
         let _ = SetWindowTheme(hwnd, w!("Explorer"), PCWSTR::null());
         Ok(hwnd)
     }
@@ -55,10 +45,6 @@ pub fn column_title(id: ColumnId) -> &'static str {
     }
 }
 
-fn send(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> LRESULT {
-    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }
-}
-
 pub fn header(hwnd: HWND) -> HWND {
     HWND(send(hwnd, LVM_GETHEADER, 0, 0).0 as *mut _)
 }
@@ -69,7 +55,7 @@ pub fn set_columns(hwnd: HWND, view: &ViewState, dpi: u32) {
         let _ = SendMessageW(hwnd, WM_SETREDRAW, Some(WPARAM(0)), None);
         while send(hwnd, LVM_DELETECOLUMN, 0, 0).0 != 0 {}
         for (i, c) in view.columns.iter().enumerate() {
-            let mut title = super::wz(column_title(c.id));
+            let mut title = crate::fs::wide_z(column_title(c.id));
             let fmt = if c.id == ColumnId::Size {
                 LVCFMT_RIGHT
             } else {
@@ -223,6 +209,26 @@ pub fn scroll_to_top_index(hwnd: HWND, top: usize, count: usize) {
 
 pub fn edit_label(hwnd: HWND, pos: usize) -> HWND {
     HWND(send(hwnd, LVM_EDITLABELW, pos, 0).0 as *mut _)
+}
+
+/// Row under a point in client coordinates.
+pub fn hit_test(hwnd: HWND, pt: POINT) -> Option<usize> {
+    let mut hit = LVHITTESTINFO {
+        pt,
+        ..Default::default()
+    };
+    let r = send(hwnd, LVM_HITTEST, 0, &mut hit as *mut _ as isize).0;
+    (r >= 0).then_some(r as usize)
+}
+
+/// Rectangle of one part (`LVIR_*`) of a row, in client coordinates.
+pub fn item_rect(hwnd: HWND, pos: usize, part: u32) -> RECT {
+    let mut rc = RECT {
+        left: part as i32,
+        ..Default::default()
+    };
+    send(hwnd, LVM_GETITEMRECT, pos, &mut rc as *mut _ as isize);
+    rc
 }
 
 pub fn redraw_item(hwnd: HWND, pos: usize) {

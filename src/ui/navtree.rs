@@ -7,6 +7,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
+use super::send;
 use crate::fs::enumerate::{Pidl, bind_folder, display_name};
 use crate::fs::{extended_path, join};
 use crate::model::listing::{ATTR_DIRECTORY, ATTR_HIDDEN, Filter, is_dot_name};
@@ -75,10 +76,6 @@ pub struct NavTree {
     pub generation: u64,
 }
 
-fn send(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> LRESULT {
-    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }
-}
-
 impl NavTree {
     pub fn create(parent: HWND, id: i32, small: HIMAGELIST) -> Result<NavTree> {
         unsafe {
@@ -89,19 +86,13 @@ impl NavTree {
                 | WINDOW_STYLE(
                     TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_FULLROWSELECT | TVS_TRACKSELECT,
                 );
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
+            let hwnd = super::create_child(
+                parent,
                 WC_TREEVIEWW,
                 PCWSTR::null(),
                 style,
-                0,
-                0,
-                0,
-                0,
-                Some(parent),
-                Some(HMENU(id as usize as *mut _)),
-                None,
-                None,
+                WINDOW_EX_STYLE::default(),
+                id,
             )?;
             let _ = SetWindowTheme(hwnd, w!("Explorer"), PCWSTR::null());
             let ex = TVS_EX_DOUBLEBUFFER | TVS_EX_FADEINOUTEXPANDOS | TVS_EX_AUTOHSCROLL;
@@ -128,7 +119,7 @@ impl NavTree {
         has_children: bool,
         bold: bool,
     ) -> usize {
-        let mut text: Vec<u16> = super::wz(name);
+        let mut text = crate::fs::wide_z(name);
         let idx = self.nodes.len();
         let ins = TVINSERTSTRUCTW {
             hParent: parent,

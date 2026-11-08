@@ -7,6 +7,7 @@ use windows::Win32::UI::Shell::*;
 use windows::core::*;
 
 use crate::fs::enumerate::Pidl;
+use crate::fs::known_folder;
 use crate::model::workspace::Location;
 
 fn name_of(pidl: *const ITEMIDLIST, kind: SIGDN) -> Option<String> {
@@ -101,15 +102,6 @@ pub fn child_location(parent: &Pidl, child: &[u8]) -> Option<Location> {
         }
         let abs = Pidl(abs);
         location_of(abs.as_ptr())
-    }
-}
-
-pub fn known_folder(id: &GUID) -> Option<String> {
-    unsafe {
-        let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
-        let s = p.to_string().ok();
-        CoTaskMemFree(Some(p.0 as _));
-        s
     }
 }
 

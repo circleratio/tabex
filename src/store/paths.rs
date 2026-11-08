@@ -11,14 +11,7 @@ pub fn base_dir() -> PathBuf {
 }
 
 fn roaming_app_data() -> Option<PathBuf> {
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-    unsafe {
-        let p = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None).ok()?;
-        let s = p.to_string().ok();
-        CoTaskMemFree(Some(p.0 as _));
-        s.map(PathBuf::from)
-    }
+    crate::fs::known_folder(&windows::Win32::UI::Shell::FOLDERID_RoamingAppData).map(PathBuf::from)
 }
 
 pub fn config_path(base: &Path) -> PathBuf {
