@@ -6,6 +6,8 @@ use super::workspace::ViewMode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonId {
     Home,
+    NewFolder,
+    Rename,
     Undo,
     ViewMode,
     Hidden,
@@ -50,6 +52,10 @@ pub struct ButtonDef {
 /// Snapshot of everything the toolbar shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ToolbarState {
+    /// The active tab shows a file system folder.
+    pub can_new_folder: bool,
+    /// ... and something is selected in it.
+    pub can_rename: bool,
     pub can_undo: bool,
     pub view_mode: ViewMode,
     pub show_hidden: bool,
@@ -60,7 +66,7 @@ pub struct ToolbarState {
 }
 
 /// Left to right.
-pub const BUTTONS: [ButtonDef; 10] = [
+pub const BUTTONS: [ButtonDef; 12] = [
     ButtonDef {
         id: ButtonId::Home,
         kind: ButtonKind::Push,
@@ -68,6 +74,24 @@ pub const BUTTONS: [ButtonDef; 10] = [
         command: Some(Command::GoHome),
         group: 0,
         glyph: Glyph::Icon('\u{E80F}'),
+        end: false,
+    },
+    ButtonDef {
+        id: ButtonId::NewFolder,
+        kind: ButtonKind::Push,
+        label: "新しいフォルダー",
+        command: Some(Command::NewFolder),
+        group: 1,
+        glyph: Glyph::Icon('\u{E8F4}'),
+        end: false,
+    },
+    ButtonDef {
+        id: ButtonId::Rename,
+        kind: ButtonKind::Push,
+        label: "名前の変更",
+        command: Some(Command::Rename),
+        group: 1,
+        glyph: Glyph::Icon('\u{E8AC}'),
         end: false,
     },
     ButtonDef {
@@ -180,12 +204,23 @@ pub fn checked(id: ButtonId, st: &ToolbarState) -> bool {
         ButtonId::Extensions => st.show_extensions,
         ButtonId::NavTree => st.nav_visible,
         ButtonId::Layout => st.dual,
-        ButtonId::Home | ButtonId::Undo | ButtonId::ViewMode | ButtonId::Refresh | ButtonId::Settings => false,
+        ButtonId::Home
+        | ButtonId::NewFolder
+        | ButtonId::Rename
+        | ButtonId::Undo
+        | ButtonId::ViewMode
+        | ButtonId::Refresh
+        | ButtonId::Settings => false,
     }
 }
 
 pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool {
-    id != ButtonId::Undo || st.can_undo
+    match id {
+        ButtonId::NewFolder => st.can_new_folder,
+        ButtonId::Rename => st.can_rename,
+        ButtonId::Undo => st.can_undo,
+        _ => true,
+    }
 }
 
 pub fn glyph(id: ButtonId, st: &ToolbarState) -> Glyph {
@@ -209,6 +244,8 @@ mod tests {
 
     fn state() -> ToolbarState {
         ToolbarState {
+            can_new_folder: false,
+            can_rename: false,
             can_undo: false,
             view_mode: ViewMode::Details,
             show_hidden: false,
@@ -226,15 +263,18 @@ mod tests {
         assert_eq!(
             ids,
             [
-                Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh, Settings
+                Home, NewFolder, Rename, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout,
+                Refresh, Settings
             ]
         );
         let groups: Vec<u8> = BUTTONS.iter().map(|b| b.group).collect();
-        assert_eq!(groups, [0, 1, 2, 3, 3, 3, 4, 4, 5, 6]);
+        assert_eq!(groups, [0, 1, 1, 1, 2, 3, 3, 3, 4, 4, 5, 6]);
         let ends: Vec<ButtonId> = BUTTONS.iter().filter(|b| b.end).map(|b| b.id).collect();
         assert_eq!(ends, [Settings]);
         assert_eq!(def(Settings).command, Some(Command::OpenSettings));
         assert_eq!(def(Home).command, Some(Command::GoHome));
+        assert_eq!(def(NewFolder).command, Some(Command::NewFolder));
+        assert_eq!(def(Rename).command, Some(Command::Rename));
         assert_eq!(def(Undo).command, Some(Command::Undo));
         assert_eq!(def(ViewMode).command, None);
         assert_eq!(def(ViewMode).kind, ButtonKind::Dropdown);
@@ -247,7 +287,7 @@ mod tests {
         for id in [Hidden, Dotfiles, Extensions, NavTree, Layout] {
             assert_eq!(def(id).kind, ButtonKind::Check);
         }
-        for id in [Home, Undo, Refresh, Settings] {
+        for id in [Home, NewFolder, Rename, Undo, Refresh, Settings] {
             assert_eq!(def(id).kind, ButtonKind::Push);
         }
     }
@@ -276,17 +316,29 @@ mod tests {
         }
         assert!(!checked(ButtonId::Undo, &st));
         assert!(!checked(ButtonId::Refresh, &st));
+        st.can_new_folder = true;
+        st.can_rename = true;
+        assert!(!checked(ButtonId::NewFolder, &st));
+        assert!(!checked(ButtonId::Rename, &st));
     }
 
     #[test]
-    fn only_undo_without_history_is_disabled() {
+    fn enabled_follows_state() {
+        use ButtonId::*;
         let mut st = state();
-        assert!(!enabled(ButtonId::Undo, &st));
-        for b in BUTTONS.iter().filter(|b| b.id != ButtonId::Undo) {
-            assert!(enabled(b.id, &st));
+        for b in &BUTTONS {
+            assert_eq!(enabled(b.id, &st), ![NewFolder, Rename, Undo].contains(&b.id));
         }
         st.can_undo = true;
-        assert!(enabled(ButtonId::Undo, &st));
+        assert!(enabled(Undo, &st));
+        assert!(!enabled(NewFolder, &st));
+        st.can_new_folder = true;
+        assert!(enabled(NewFolder, &st));
+        assert!(!enabled(Rename, &st));
+        st.can_rename = true;
+        for b in &BUTTONS {
+            assert!(enabled(b.id, &st));
+        }
     }
 
     #[test]

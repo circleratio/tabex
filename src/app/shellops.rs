@@ -149,6 +149,10 @@ impl App {
 
     fn start_label_edit(&mut self, list: HWND, pos: usize) {
         self.editing_label = true;
+        // LVM_EDITLABELW does nothing unless the list has focus (e.g. from a toolbar click).
+        unsafe {
+            let _ = SetFocus(Some(list));
+        }
         let edit = listview::edit_label(list, pos);
         if edit.0.is_null() {
             self.editing_label = false;

@@ -760,7 +760,7 @@ pub fn launch(kind: &ShellKind, dir: &str) -> Result<(), String>
 #### ボタンの定義（`model::toolbar`、純粋関数）
 
 ```rust
-pub enum ButtonId { Home, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh, Settings }
+pub enum ButtonId { Home, NewFolder, Rename, Undo, ViewMode, Hidden, Dotfiles, Extensions, NavTree, Layout, Refresh, Settings }
 pub enum ButtonKind { Push, Check, Dropdown }
 pub enum Glyph { Icon(char), Text(&'static str) }
 
@@ -776,6 +776,8 @@ pub struct ButtonDef {
 /// Snapshot of everything the toolbar shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ToolbarState {
+    pub can_new_folder: bool, // the active tab shows a file system folder
+    pub can_rename: bool,     // ... and something is selected in it
     pub can_undo: bool,
     pub view_mode: ViewMode,
     pub show_hidden: bool,
@@ -785,10 +787,10 @@ pub struct ToolbarState {
     pub dual: bool,
 }
 
-pub const BUTTONS: [ButtonDef; 10];                 // left to right; `end` ones go to the right end
+pub const BUTTONS: [ButtonDef; 12];                 // left to right; `end` ones go to the right end
 pub const VIEW_MODES: [(ViewMode, &str, Glyph); 5]; // dropdown order: large, medium, small, list, details
 pub fn checked(id: ButtonId, st: &ToolbarState) -> bool;
-pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool;  // false only for Undo without history
+pub fn enabled(id: ButtonId, st: &ToolbarState) -> bool;  // NewFolder / Rename / Undo follow st
 pub fn glyph(id: ButtonId, st: &ToolbarState) -> Glyph;   // ViewMode follows st.view_mode
 pub fn tooltip(label: &str, key: Option<&str>) -> String; // "隠しファイル (Ctrl+H)" / "ファイル名拡張子"
 pub fn def(id: ButtonId) -> &'static ButtonDef;
@@ -798,6 +800,8 @@ pub fn view_mode_index(mode: ViewMode) -> usize;          // position in VIEW_MO
 | `ButtonId` | 種類 | `label` | `command` | group | グリフ |
 |---|---|---|---|---|---|
 | `Home` | Push（右クリックで一覧） | ホーム | `GoHome` | 0 | U+E80F（Home。実装時に両フォントで確認する） |
+| `NewFolder` | Push | 新しいフォルダー | `NewFolder` | 1 | U+E8F4（NewFolder） |
+| `Rename` | Push | 名前の変更 | `Rename` | 1 | U+E8AC（Rename） |
 | `Undo` | Push | 元に戻す | `Undo` | 1 | U+E7A7（Undo） |
 | `ViewMode` | Dropdown | 表示モード | なし | 2 | 今のモードのグリフ（`VIEW_MODES`） |
 | `Hidden` | Check | 隠しファイル | `ToggleHidden` | 3 | U+E7B3（目） |
@@ -851,6 +855,8 @@ impl Toolbar {
 
 - `App` に `toolbar: ui::toolbar::Toolbar` を持たせ、`App::new` でステータスバーと一緒に作る。作れなかったときは、ほかのコントロールと同じく起動エラーにする。
 - `App::toolbar_state(&self) -> ToolbarState`: 次の値から作る。
+  - `can_new_folder`: アクティブなタブの `location.is_file_system()`（`active_fs_dir` と同じ条件。Ctrl+Shift+N が何もしない場所では無効になる）
+  - `can_rename`: `can_new_folder` で、かつアクティブなタブの一覧の `selection_count() > 0`（`begin_rename` が名前の変更を始められる条件と同じ）
   - `undo_stack` が空でないか
   - アクティブなタブの `view.mode`
   - `config` の各表示設定
@@ -860,6 +866,7 @@ impl Toolbar {
   - `set_active_pane` の最後。一覧をクリックしてペインが変わったときのため。
   - `on_worker` でファイル操作が終わり、`undo_stack` が変わったとき
   - 起動して、最初のワークスペースを表示した直後
+  - `update_status` の最後。選択数や表示中の一覧は、ステータスバーの表示と同じ契機で変わるため（一覧のクリック・キーでの選択、読み込みの完了、絞り込みなど）。そのため `update_status` は `&mut self` を取る
 - ボタンを押したとき: ツールバーは `WM_COMMAND`（`lParam` はツールバーの HWND）を親に送る。`on_command` で `ctl == self.toolbar.hwnd` なら、`Toolbar::button_of(id)` でボタンを引き、その `command` を `execute` する。
   - `BTNS_CHECK` のボタンは、クリックすると見た目が先に切り替わる。それでも `execute` の最後の `sync_toolbar` が設定から状態を作り直すので、見た目と設定のずれは残らない。
 - 表示モード:
@@ -876,6 +883,8 @@ impl Toolbar {
   - キーの割り当ては起動中に変わらないので、通知のたびに作り直してよい。
 - フォーカス: ツールバーのボタンは、クリックしてもフォーカスを取らない（`WS_TABSTOP` を付けず、`TB_SETHOTITEM` などのキーボード操作も使わない）。
   - ツールバーのボタンが実行するコマンドは、どれもフォーカスを動かさない（`Refresh` もフォーカスはそのまま）。
+  - 例外として、`NewFolder` と `Rename` は名前の入力欄にフォーカスを移す（要求仕様 §3.1）。`LVM_EDITLABELW` は一覧にフォーカスがないと編集を始めないので、`start_label_edit` は編集を始める前に一覧へ `SetFocus` する（`NewFolder` は `try_pending_rename` がすでにそうしている）。
+  - `Rename` はキーでは一覧にフォーカスがあるときだけ効く（`is_list_command`）が、ツールバーのボタンは `execute` を直接呼ぶので、フォーカスがナビゲーションツリーなどにあっても、アクティブなタブの一覧で名前の変更を始める。
   - 例外として、`ToggleNavTree` でツリーを隠したとき、フォーカスがツリー（またはその子）にあれば `focus_active_list` で一覧へ移す（要求仕様 §3.1）。キーで切り替えた場合も同じ。
   - ドロップダウンのメニューは、閉じるとフォーカスを元に戻す。
   - クリックの前後でフォーカスが変わらないことは、手動確認で確かめる（`doc/plan.md`）。
@@ -1294,7 +1303,7 @@ strip = true
 | `model::cmdline` | `sh`、前後の空白、空行、知らないコマンド、大文字の `SH` |
 | `shell::terminal` | `choose` の優先順位（見つかるものを差し替える）と設定の優先、`command_line` の引用符とドライブのルート、`is_cmd` |
 | `model::homes` | `resolve`（順序の保持、名前の省略と空白だけの名前、`path` の欠落・空・相対パスが警告になり番号が正しいこと、環境変数の展開、末尾の `\` の除去とドライブのルートの維持、使える項目が 0 件のとき `fallback` だけになること）、`is_absolute`（ドライブ・UNC・相対・`shell:`）、`same_place`（大小文字・末尾の `\`）、`menu_label`（名前あり・なし・`&` を含む名前） |
-| `model::toolbar` | ボタンの並びと区切り（要求仕様 §3.1 の表の順）、各ボタンの `command`、`checked` / `enabled` が `ToolbarState` に従うこと（元に戻すの履歴がないときだけ無効になること）、`ViewMode` のグリフが表示モードに従うこと、`tooltip` のキーありとキーなし |
+| `model::toolbar` | ボタンの並びと区切り（要求仕様 §3.1 の表の順）、各ボタンの `command`、`checked` / `enabled` が `ToolbarState` に従うこと（元に戻すは履歴がないとき、新しいフォルダーはファイルシステムのフォルダでないとき、名前の変更はさらに何も選んでいないときに無効になり、ほかのボタンは常に有効なこと）、`ViewMode` のグリフが表示モードに従うこと、`tooltip` のキーありとキーなし |
 | `model::command` | `from_name("WorkspaceSaveAs")` が `WorkspaceNew { from_current: true }` になること |
 | `ui::accel`（`KeyTable`） | `from_overrides` が `KeyMap::new` と同じ割り当てになること、`assign`（空いているキー・ほかのコマンドから奪うキー）、`remove`、`reset`（ほかのコマンドが使っている既定のキーを取り戻す）、`reset_all`、`is_default`、`to_overrides` の往復（`KeyMap::new(to_overrides(..))` が表と同じ）と最小性（変更がなければ空）、文字の割り当て（`":"`）の引き継ぎ |
 | `model::command`（`CATALOG`） | すべての名前が `from_name` で読めること、名前の重複がないこと、既定のキー割り当てに使われているコマンドがすべて `name_of` で引けること、`OpenSettings` |

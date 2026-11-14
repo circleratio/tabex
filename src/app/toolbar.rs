@@ -13,7 +13,16 @@ use crate::ui::toolbar::Toolbar;
 
 impl App {
     pub fn toolbar_state(&self) -> ToolbarState {
+        let tab = self.ws.active_tab();
+        let can_new_folder = tab.location.is_file_system();
+        let selected = self
+            .rt
+            .get(&tab.id)
+            .and_then(|r| r.listing.as_ref())
+            .is_some_and(|l| l.selection_count() > 0);
         ToolbarState {
+            can_new_folder,
+            can_rename: can_new_folder && selected,
             can_undo: !self.undo_stack.is_empty(),
             view_mode: self.ws.active_tab().view.mode,
             show_hidden: self.config.show_hidden,

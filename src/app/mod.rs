@@ -516,7 +516,8 @@ impl App {
         }
     }
 
-    pub fn update_status(&self) {
+    /// Also syncs the toolbar: the selection it depends on changes when the status does.
+    pub fn update_status(&mut self) {
         let set = |i: usize, s: &str| unsafe {
             let w = crate::fs::wide_z(s);
             SendMessageW(
@@ -559,6 +560,7 @@ impl App {
             },
         );
         set(3, self.status_message.as_deref().unwrap_or(""));
+        self.sync_toolbar();
     }
 
     pub fn update_title(&self) {
